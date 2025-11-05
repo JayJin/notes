@@ -1,0 +1,82 @@
+Grafana 대시보드 설정
+DataHub의 주요 메트릭을 모니터링하는 대시보드를 생성합니다.​
+
+주요 모니터링 메트릭:
+
+JVM 메트릭
+
+jvm_memory_used_bytes: JVM 메모리 사용량
+
+jvm_threads_live: 활성 스레드 수
+
+jvm_gc_pause_seconds: GC 일시정지 시간
+
+DataHub 애플리케이션 메트릭
+
+graphql_request_duration_seconds: GraphQL 요청 처리 시간
+
+kafka_message_queue_time: Kafka 메시지 큐 대기 시간
+
+cache_gets_total: 캐시 조회 횟수 (hit/miss)
+
+데이터 현황 메트릭
+
+등록된 데이터셋 수
+
+Ingestion 처리량
+
+메타데이터 업데이트 빈도
+
+Prometheus 쿼리 예시:
+
+text
+# 캐시 히트율
+sum(rate(cache_gets_total{result="hit"}[5m])) by (cache) 
+/ sum(rate(cache_gets_total[5m])) by (cache)
+
+# GraphQL 요청 평균 지연시간
+rate(graphql_request_duration_seconds_sum[5m]) 
+/ rate(graphql_request_duration_seconds_count[5m])
+
+# Kafka 큐 대기시간 P99
+histogram_quantile(0.99, 
+  sum by (topic, le) (
+    rate(kafka_message_queue_time_seconds_bucket[5m])
+  )
+)
+실행 방법
+bash
+# 디렉토리 구조 생성
+mkdir -p prometheus grafana/provisioning/datasources
+
+# 설정 파일 작성 (위 내용 참조)
+
+# Docker Compose 실행
+docker-compose up -d
+
+# 서비스 확인
+docker-compose ps
+접속 정보:
+
+DataHub UI: http://localhost:9002
+
+Prometheus: http://localhost:9090
+
+Grafana: http://localhost:3000 (admin/admin)
+
+추가 권장사항
+정기적인 메타데이터 백업: 위의 export 스크립트를 cron 작업으로 등록하여 주기적으로 백업​
+
+알림 설정: Prometheus Alertmanager를 추가하여 임계값 초과 시 알림 수신​
+
+데이터 보존 정책: Prometheus의 데이터 보존 기간 설정
+
+text
+command:
+  - '--storage.tsdb.retention.time=30d'
+보안 설정: 폐쇄망이지만 인증 활성화 권장
+
+text
+datahub-gms:
+  environment:
+    - METADATA_SERVICE_AUTH_ENABLED=true

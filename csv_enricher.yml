@@ -1,0 +1,14 @@
+source:
+  type: csv-enricher
+  config:
+    filename: ./datahub_metadata_update.csv
+    write_semantics: PATCH  # PATCH (추가) 또는 OVERRIDE (덮어쓰기)
+    delimiter: ","
+    array_delimiter: "|"
+
+sink:
+  type: datahub-rest
+  config:
+    server: "http://localhost:8080"
+    # token: "your-token"  # 인증 필요시
+

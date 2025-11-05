@@ -1,0 +1,3 @@
+resource,subresource,glossary_terms,tags,owners,ownership_type,description,domain
+"urn:li:dataset:(urn:li:dataPlatform:snowflake,datahub.growth.users,PROD)",,[urn:li:glossaryTerm:Users],[urn:li:tag:HighQuality],[urn:li:corpuser:admin],TECHNICAL_OWNER,"사용자 정보 테이블",urn:li:domain:Engineering
+"urn:li:dataset:(urn:li:dataPlatform:snowflake,datahub.growth.users,PROD)",first_name,[urn:li:glossaryTerm:FirstName],[urn:li:tag:PII],,,,"사용자 이름"

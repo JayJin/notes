@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # 기존 DataHub 서비스들...
+  
+  datahub-gms:
+    # 기존 설정...
+    environment:
+      - ENABLE_PROMETHEUS=true
+      - METADATA_SERVICE_AUTH_ENABLED=false
+    ports:
+      - "8080:8080"
+      - "4318:4318"  # JMX Exporter 포트
+  
+  datahub-frontend-react:
+    # 기존 설정...
+    environment:
+      - ENABLE_PROMETHEUS=true
+    ports:
+      - "9002:9002"
+      - "4319:4318"  # JMX Exporter 포트
+  
+  # Prometheus 추가
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    restart: always
+    networks:
+      - datahub_network
+  
+  # Grafana 추가
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    restart: always
+    networks:
+      - datahub_network
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  datahub_network:
+    driver: bridge
