@@ -1,0 +1,344 @@
+{
+  "dashboard": {
+    "title": "DataHub 데이터 카탈로그 관리",
+    "tags": ["datahub", "metadata", "catalog"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "전체 데이터셋 현황",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "datahub_datasets_total",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "orientation": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "color": {"mode": "thresholds"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "blue"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "메타데이터 완성도",
+        "type": "gauge",
+        "targets": [
+          {
+            "expr": "datahub_metadata_completeness_ratio * 100",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+        "options": {
+          "showThresholdLabels": false,
+          "showThresholdMarkers": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 50, "color": "yellow"},
+                {"value": 80, "color": "green"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 3,
+        "title": "문서화 커버리지",
+        "type": "gauge",
+        "targets": [
+          {
+            "expr": "datahub_documentation_coverage_ratio * 100",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+        "options": {
+          "showThresholdLabels": false,
+          "showThresholdMarkers": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "min": 0,
+            "max": 100,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "red"},
+                {"value": 60, "color": "yellow"},
+                {"value": 85, "color": "green"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 4,
+        "title": "데이터셋 품질 지표",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "datahub_datasets_with_owner",
+            "legendFormat": "소유자 있음",
+            "refId": "A"
+          },
+          {
+            "expr": "datahub_datasets_without_owner",
+            "legendFormat": "소유자 없음",
+            "refId": "B"
+          },
+          {
+            "expr": "datahub_datasets_with_description",
+            "legendFormat": "설명 있음",
+            "refId": "C"
+          },
+          {
+            "expr": "datahub_datasets_without_description",
+            "legendFormat": "설명 없음",
+            "refId": "D"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "fillOpacity": 10
+            }
+          }
+        }
+      },
+      {
+        "id": 5,
+        "title": "플랫폼별 데이터셋 분포",
+        "type": "piechart",
+        "targets": [
+          {
+            "expr": "datahub_datasets_by_platform",
+            "legendFormat": "{{platform}}",
+            "refId": "A"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 6},
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right"
+          },
+          "pieType": "pie"
+        }
+      },
+      {
+        "id": 6,
+        "title": "메타데이터 품질 요약",
+        "type": "table",
+        "targets": [
+          {
+            "expr": "datahub_datasets_total",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          },
+          {
+            "expr": "datahub_datasets_without_owner",
+            "format": "table",
+            "instant": true,
+            "refId": "B"
+          },
+          {
+            "expr": "datahub_datasets_without_description",
+            "format": "table",
+            "instant": true,
+            "refId": "C"
+          },
+          {
+            "expr": "datahub_datasets_without_tags",
+            "format": "table",
+            "instant": true,
+            "refId": "D"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 6, "x": 18, "y": 6},
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {},
+              "indexByName": {},
+              "renameByName": {
+                "Value #A": "전체 데이터셋",
+                "Value #B": "소유자 없음",
+                "Value #C": "설명 없음",
+                "Value #D": "태그 없음"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "태그 및 용어집 현황",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "datahub_tags_total",
+            "legendFormat": "태그",
+            "refId": "A"
+          },
+          {
+            "expr": "datahub_glossary_terms_total",
+            "legendFormat": "용어집",
+            "refId": "B"
+          },
+          {
+            "expr": "datahub_domains_total",
+            "legendFormat": "도메인",
+            "refId": "C"
+          }
+        ],
+        "gridPos": {"h": 6, "w": 8, "x": 0, "y": 14},
+        "options": {
+          "orientation": "horizontal",
+          "textMode": "value_and_name",
+          "colorMode": "background"
+        }
+      },
+      {
+        "id": 8,
+        "title": "데이터 자산 현황",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "datahub_dashboards_total",
+            "legendFormat": "대시보드",
+            "refId": "A"
+          },
+          {
+            "expr": "datahub_charts_total",
+            "legendFormat": "차트",
+            "refId": "B"
+          },
+          {
+            "expr": "datahub_data_jobs_total",
+            "legendFormat": "데이터 작업",
+            "refId": "C"
+          }
+        ],
+        "gridPos": {"h": 6, "w": 8, "x": 8, "y": 14},
+        "options": {
+          "orientation": "horizontal",
+          "textMode": "value_and_name",
+          "colorMode": "background"
+        }
+      },
+      {
+        "id": 9,
+        "title": "사용자 및 그룹",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "datahub_users_total",
+            "legendFormat": "사용자",
+            "refId": "A"
+          },
+          {
+            "expr": "datahub_groups_total",
+            "legendFormat": "그룹",
+            "refId": "B"
+          }
+        ],
+        "gridPos": {"h": 6, "w": 8, "x": 16, "y": 14},
+        "options": {
+          "orientation": "horizontal",
+          "textMode": "value_and_name",
+          "colorMode": "background"
+        }
+      },
+      {
+        "id": 10,
+        "title": "품질 개선이 필요한 데이터셋",
+        "type": "bargauge",
+        "targets": [
+          {
+            "expr": "datahub_datasets_without_owner",
+            "legendFormat": "소유자 없음",
+            "refId": "A"
+          },
+          {
+            "expr": "datahub_datasets_without_description",
+            "legendFormat": "설명 없음",
+            "refId": "B"
+          },
+          {
+            "expr": "datahub_datasets_without_tags",
+            "legendFormat": "태그 없음",
+            "refId": "C"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+        "options": {
+          "orientation": "horizontal",
+          "displayMode": "gradient",
+          "showUnfilled": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {"mode": "palette-classic"},
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": 0, "color": "green"},
+                {"value": 10, "color": "yellow"},
+                {"value": 50, "color": "red"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 11,
+        "title": "Exporter 수집 상태",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "datahub_last_scrape_success",
+            "legendFormat": "수집 성공 (1=성공, 0=실패)",
+            "refId": "A"
+          },
+          {
+            "expr": "datahub_last_scrape_duration_seconds",
+            "legendFormat": "수집 소요 시간 (초)",
+            "refId": "B"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20}
+      }
+    ],
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "1m"
+  }
+}
