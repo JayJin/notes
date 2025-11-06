@@ -3,12 +3,12 @@ import time
 import logging
 import base64
 import requests
-from prometheus_client import start_http_server, Gauge
+from prometheus_client import start_http_server, Gauge, Counter
 
-# 로깅 설정
+# 로깅 설정 (더 상세하게)
 log = logging.getLogger(__name__)
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # ✅ DEBUG 레벨로 변경
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
@@ -22,6 +22,9 @@ MAX_RETRIES = 3
 RETRY_DELAY = 5
 SCRAPE_INTERVAL = int(os.getenv('SCRAPE_INTERVAL', '60'))
 
+# ✅ 에러 카운터 추가
+scrape_errors = Counter('datahub_scrape_errors_total', 'Total number of scrape errors')
+
 # Prometheus Metrics 정의
 total_datasets = Gauge('datahub_dataset_total', '전체 데이터셋 수')
 desc_filled_total = Gauge('datahub_dataset_with_description', '설명이 있는 데이터셋 수')
@@ -31,6 +34,7 @@ datasets_without_owner = Gauge('datahub_dataset_without_owner', '소유자가 �
 datasets_without_description = Gauge('datahub_dataset_without_description', '설명이 없는 데이터셋 수')
 datasets_without_tags = Gauge('datahub_dataset_without_tags', '태그가 없는 데이터셋 수')
 metadata_completeness_ratio = Gauge('datahub_metadata_completeness_ratio', '메타데이터 완성도 비율')
+last_scrape_success = Gauge('datahub_last_scrape_success', '마지막 수집 성공 여부 (1=성공, 0=실패)')
 
 
 def _auth_header():
@@ -40,14 +44,13 @@ def _auth_header():
     
     headers = {"Content-Type": "application/json"}
     
-    # 인증 정보가 있는 경우에만 추가
     if client_id and client_secret:
         token = f"{client_id}:{client_secret}"
         b64_token = base64.b64encode(token.encode()).decode()
         headers["Authorization"] = f"Basic {b64_token}"
-        log.info("Using authentication")
+        log.debug("Using authentication")
     else:
-        log.info("No authentication configured")
+        log.debug("No authentication configured (this is OK for default DataHub setup)")
     
     return headers
 
@@ -60,12 +63,18 @@ def _post(query: str, variables: dict = None):
             if variables:
                 payload["variables"] = variables
             
+            log.debug(f"Sending GraphQL request to {GMS_URL}/api/graphql")
+            log.debug(f"Query: {query[:200]}...")  # 쿼리 일부만 로깅
+            
             resp = requests.post(
                 f"{GMS_URL}/api/graphql",
                 json=payload,
                 headers=_auth_header(),
                 timeout=30
             )
+            
+            log.debug(f"Response status code: {resp.status_code}")
+            
             resp.raise_for_status()
             
             result = resp.json()
@@ -73,102 +82,70 @@ def _post(query: str, variables: dict = None):
             # GraphQL 에러 체크
             if "errors" in result:
                 log.error(f"GraphQL errors: {result['errors']}")
+                scrape_errors.inc()
                 return None
             
+            log.debug(f"Successfully received response")
             return result.get("data")
         
-        except requests.exceptions.Timeout:
-            log.warning(f"Request timeout (attempt {attempt}/{MAX_RETRIES})")
+        except requests.exceptions.ConnectionError as e:
+            log.error(f"Connection error (attempt {attempt}/{MAX_RETRIES}): {e}")
+            log.error(f"Cannot connect to {GMS_URL} - check if datahub-gms is running and network is correct")
+            scrape_errors.inc()
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
-        except requests.exceptions.RequestException as e:
-            log.error(f"Request failed (attempt {attempt}/{MAX_RETRIES}): {e}")
+        
+        except requests.exceptions.Timeout as e:
+            log.warning(f"Request timeout (attempt {attempt}/{MAX_RETRIES}): {e}")
+            scrape_errors.inc()
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
+        
+        except requests.exceptions.HTTPError as e:
+            log.error(f"HTTP error (attempt {attempt}/{MAX_RETRIES}): {e}")
+            log.error(f"Response content: {resp.text[:500]}")
+            scrape_errors.inc()
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
+        
         except Exception as e:
-            log.error(f"Unexpected error: {e}")
+            log.error(f"Unexpected error (attempt {attempt}/{MAX_RETRIES}): {e}", exc_info=True)
+            scrape_errors.inc()
             return None
     
     log.error(f"Failed after {MAX_RETRIES} retries")
     return None
 
 
-def get_all_datasets():
-    """모든 데이터셋 정보 가져오기 (페이징)"""
-    start = 0
-    all_entities = []
+def test_connection():
+    """DataHub GMS 연결 테스트"""
+    log.info("Testing connection to DataHub GMS...")
     
-    while True:
-        query = f"""
-        query {{
-          search(
-            input: {{
-              type: DATASET
-              query: "*"
-              start: {start}
-              count: {PAGE_SIZE}
-            }}
-          ) {{
-            total
-            searchResults {{
-              entity {{
-                ... on Dataset {{
-                  urn
-                  name
-                  platform {{
-                    name
-                  }}
-                  properties {{
-                    description
-                  }}
-                  ownership {{
-                    owners {{
-                      owner {{
-                        ... on CorpUser {{
-                          username
-                        }}
-                      }}
-                    }}
-                  }}
-                  globalTags {{
-                    tags {{
-                      tag {{
-                        name
-                      }}
-                    }}
-                  }}
-                }}
-              }}
-            }}
-          }}
-        }}
-        """
+    try:
+        # 간단한 health check
+        resp = requests.get(f"{GMS_URL}/health", timeout=10)
+        log.info(f"Health check response: {resp.status_code}")
         
-        payload = _post(query)
-        
-        if not payload or 'search' not in payload:
-            log.error("Failed to fetch datasets")
-            break
-        
-        search_result = payload['search']
-        total = search_result['total']
-        results = search_result['searchResults']
-        
-        log.info(f"Fetched {len(results)} datasets (offset {start}, total {total})")
-        
-        all_entities.extend(results)
-        
-        # 더 이상 가져올 데이터가 없으면 종료
-        if start + len(results) >= total:
-            break
-        
-        start += PAGE_SIZE
+        if resp.status_code == 200:
+            log.info("✅ DataHub GMS is reachable")
+            return True
+        else:
+            log.warning(f"⚠️ DataHub GMS returned status {resp.status_code}")
+            return False
     
-    return all_entities
+    except requests.exceptions.ConnectionError as e:
+        log.error(f"❌ Cannot connect to DataHub GMS at {GMS_URL}")
+        log.error(f"Error: {e}")
+        log.error("Check: 1) Is datahub-gms container running? 2) Are containers on same network?")
+        return False
+    
+    except Exception as e:
+        log.error(f"❌ Unexpected error during connection test: {e}")
+        return False
 
 
 def get_dataset_count():
-    """전체 데이터셋 수만 가져오기 (빠른 조회)"""
+    """전체 데이터셋 수만 가져오기"""
     query = """
     query {
       search(
@@ -184,12 +161,16 @@ def get_dataset_count():
     }
     """
     
+    log.info("Fetching total dataset count...")
     payload = _post(query)
     
     if payload and 'search' in payload:
-        return payload['search']['total']
-    
-    return 0
+        count = payload['search']['total']
+        log.info(f"✅ Total datasets: {count}")
+        return count
+    else:
+        log.error("❌ Failed to fetch dataset count")
+        return 0
 
 
 def get_datasets_without_owners():
@@ -215,12 +196,16 @@ def get_datasets_without_owners():
     }
     """
     
+    log.info("Fetching datasets without owners...")
     payload = _post(query)
     
     if payload and 'search' in payload:
-        return payload['search']['total']
-    
-    return 0
+        count = payload['search']['total']
+        log.info(f"✅ Datasets without owners: {count}")
+        return count
+    else:
+        log.error("❌ Failed to fetch datasets without owners")
+        return 0
 
 
 def get_datasets_without_description():
@@ -246,12 +231,16 @@ def get_datasets_without_description():
     }
     """
     
+    log.info("Fetching datasets without description...")
     payload = _post(query)
     
     if payload and 'search' in payload:
-        return payload['search']['total']
-    
-    return 0
+        count = payload['search']['total']
+        log.info(f"✅ Datasets without description: {count}")
+        return count
+    else:
+        log.error("❌ Failed to fetch datasets without description")
+        return 0
 
 
 def get_datasets_without_tags():
@@ -277,74 +266,110 @@ def get_datasets_without_tags():
     }
     """
     
+    log.info("Fetching datasets without tags...")
     payload = _post(query)
     
     if payload and 'search' in payload:
-        return payload['search']['total']
-    
-    return 0
+        count = payload['search']['total']
+        log.info(f"✅ Datasets without tags: {count}")
+        return count
+    else:
+        log.error("❌ Failed to fetch datasets without tags")
+        return 0
 
 
 def collect_metrics():
     """메트릭 수집 및 업데이트"""
+    log.info("=" * 60)
     log.info("Starting metric collection...")
+    log.info("=" * 60)
     
     try:
-        # 1. 전체 데이터셋 수 (빠른 조회)
+        # 1. 전체 데이터셋 수
         total = get_dataset_count()
         total_datasets.set(total)
-        log.info(f"Total datasets: {total}")
         
         # 2. 소유자 없는 데이터셋
         without_owner = get_datasets_without_owners()
         datasets_without_owner.set(without_owner)
-        owner_filled_total.set(total - without_owner)
-        log.info(f"Datasets without owner: {without_owner}")
+        owner_filled_total.set(max(0, total - without_owner))
         
         # 3. 설명 없는 데이터셋
         without_desc = get_datasets_without_description()
         datasets_without_description.set(without_desc)
-        desc_filled_total.set(total - without_desc)
-        log.info(f"Datasets without description: {without_desc}")
+        desc_filled_total.set(max(0, total - without_desc))
         
         # 4. 태그 없는 데이터셋
         without_tags = get_datasets_without_tags()
         datasets_without_tags.set(without_tags)
-        tag_filled_total.set(total - without_tags)
-        log.info(f"Datasets without tags: {without_tags}")
+        tag_filled_total.set(max(0, total - without_tags))
         
         # 5. 메타데이터 완성도 계산
-        # (소유자 + 설명 + 태그 모두 있는 데이터셋 비율)
         if total > 0:
-            # 가장 많이 누락된 항목을 기준으로 불완전한 데이터셋 추정
             max_incomplete = max(without_owner, without_desc, without_tags)
             completeness = (total - max_incomplete) / total
             metadata_completeness_ratio.set(completeness)
-            log.info(f"Metadata completeness ratio: {completeness:.2%}")
+            log.info(f"📊 Metadata completeness ratio: {completeness:.2%}")
         
-        log.info("Metric collection completed successfully")
+        last_scrape_success.set(1)
+        log.info("=" * 60)
+        log.info("✅ Metric collection completed successfully")
+        log.info("=" * 60)
         
     except Exception as e:
-        log.error(f"Error during metric collection: {e}")
+        log.error(f"❌ Error during metric collection: {e}", exc_info=True)
+        last_scrape_success.set(0)
+        scrape_errors.inc()
 
 
 if __name__ == "__main__":
-    log.info(f"Starting DataHub Prometheus Exporter")
+    log.info("=" * 60)
+    log.info("DataHub Prometheus Exporter Starting...")
+    log.info("=" * 60)
     log.info(f"GMS URL: {GMS_URL}")
     log.info(f"Scrape interval: {SCRAPE_INTERVAL} seconds")
-    log.info(f"Starting Prometheus server on port 9105")
+    log.info(f"Metrics port: 9105")
+    log.info("=" * 60)
+    
+    # 연결 테스트
+    if not test_connection():
+        log.error("Cannot connect to DataHub GMS. Exiting...")
+        exit(1)
     
     # Prometheus HTTP 서버 시작
     start_http_server(9105)
+    log.info("✅ Prometheus metrics server started on port 9105")
+    log.info(f"   Metrics available at http://localhost:9105/metrics")
     
-    log.info("Exporter started successfully")
+    # 초기 메트릭 값 설정
+    total_datasets.set(0)
+    desc_filled_total.set(0)
+    owner_filled_total.set(0)
+    tag_filled_total.set(0)
+    datasets_without_owner.set(0)
+    datasets_without_description.set(0)
+    datasets_without_tags.set(0)
+    metadata_completeness_ratio.set(0)
+    last_scrape_success.set(0)
+    
+    log.info("✅ Initial metrics set")
+    
+    # 즉시 첫 수집 실행
+    log.info("Running initial metric collection...")
+    try:
+        collect_metrics()
+    except Exception as e:
+        log.error(f"Error in initial collection: {e}", exc_info=True)
     
     # 주기적으로 메트릭 수집
     while True:
         try:
+            log.info(f"Sleeping for {SCRAPE_INTERVAL} seconds...")
+            time.sleep(SCRAPE_INTERVAL)
             collect_metrics()
+        except KeyboardInterrupt:
+            log.info("Received interrupt signal. Shutting down...")
+            break
         except Exception as e:
-            log.error(f"Error in main loop: {e}")
-        
-        log.info(f"Sleeping for {SCRAPE_INTERVAL} seconds...")
-        time.sleep(SCRAPE_INTERVAL)
+            log.error(f"Error in main loop: {e}", exc_info=True)
+    log.info("DataHub Prometheus Exporter stopped.")
