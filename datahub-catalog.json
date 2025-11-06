@@ -1,344 +1,445 @@
 {
   "dashboard": {
+    "id": null,
+    "uid": "datahub-catalog",
     "title": "DataHub 데이터 카탈로그 관리",
     "tags": ["datahub", "metadata", "catalog"],
     "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "1m",
     "panels": [
       {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "blue",
+                  "value": null
+                }
+              ]
+            },
+            "unit": "short"
+          }
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 6,
+          "x": 0,
+          "y": 0
+        },
         "id": 1,
-        "title": "전체 데이터셋 현황",
-        "type": "stat",
+        "options": {
+          "colorMode": "background",
+          "graphMode": "area",
+          "justifyMode": "auto",
+          "orientation": "auto",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "auto"
+        },
+        "pluginVersion": "10.0.0",
         "targets": [
           {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_datasets_total",
             "refId": "A"
           }
         ],
-        "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
-        "options": {
-          "colorMode": "background",
-          "graphMode": "area",
-          "orientation": "auto"
+        "title": "전체 데이터셋 수",
+        "type": "stat"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
         },
         "fieldConfig": {
           "defaults": {
-            "unit": "short",
-            "color": {"mode": "thresholds"},
+            "color": {
+              "mode": "thresholds"
+            },
+            "max": 100,
+            "min": 0,
             "thresholds": {
               "mode": "absolute",
               "steps": [
-                {"value": 0, "color": "blue"}
+                {
+                  "color": "red",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 50
+                },
+                {
+                  "color": "green",
+                  "value": 80
+                }
               ]
-            }
+            },
+            "unit": "percent"
           }
-        }
-      },
-      {
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 6,
+          "x": 6,
+          "y": 0
+        },
         "id": 2,
-        "title": "메타데이터 완성도",
-        "type": "gauge",
+        "options": {
+          "orientation": "auto",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "showThresholdLabels": false,
+          "showThresholdMarkers": true
+        },
+        "pluginVersion": "10.0.0",
         "targets": [
           {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_metadata_completeness_ratio * 100",
             "refId": "A"
           }
         ],
-        "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
-        "options": {
-          "showThresholdLabels": false,
-          "showThresholdMarkers": true
+        "title": "메타데이터 완성도",
+        "type": "gauge"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
         },
         "fieldConfig": {
           "defaults": {
-            "unit": "percent",
-            "min": 0,
+            "color": {
+              "mode": "thresholds"
+            },
             "max": 100,
+            "min": 0,
             "thresholds": {
               "mode": "absolute",
               "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 50, "color": "yellow"},
-                {"value": 80, "color": "green"}
+                {
+                  "color": "red",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 60
+                },
+                {
+                  "color": "green",
+                  "value": 85
+                }
               ]
-            }
+            },
+            "unit": "percent"
           }
-        }
-      },
-      {
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 6,
+          "x": 12,
+          "y": 0
+        },
         "id": 3,
-        "title": "문서화 커버리지",
-        "type": "gauge",
+        "options": {
+          "orientation": "auto",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "showThresholdLabels": false,
+          "showThresholdMarkers": true
+        },
+        "pluginVersion": "10.0.0",
         "targets": [
           {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_documentation_coverage_ratio * 100",
             "refId": "A"
           }
         ],
-        "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
-        "options": {
-          "showThresholdLabels": false,
-          "showThresholdMarkers": true
+        "title": "문서화 커버리지",
+        "type": "gauge"
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
         },
         "fieldConfig": {
           "defaults": {
-            "unit": "percent",
-            "min": 0,
-            "max": 100,
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "axisCenteredZero": false,
+              "axisColorMode": "text",
+              "axisLabel": "",
+              "axisPlacement": "auto",
+              "barAlignment": 0,
+              "drawStyle": "line",
+              "fillOpacity": 10,
+              "gradientMode": "none",
+              "hideFrom": {
+                "tooltip": false,
+                "viz": false,
+                "legend": false
+              },
+              "lineInterpolation": "linear",
+              "lineWidth": 1,
+              "pointSize": 5,
+              "scaleDistribution": {
+                "type": "linear"
+              },
+              "showPoints": "auto",
+              "spanNulls": false,
+              "stacking": {
+                "group": "A",
+                "mode": "none"
+              },
+              "thresholdsStyle": {
+                "mode": "off"
+              }
+            },
+            "mappings": [],
             "thresholds": {
               "mode": "absolute",
               "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 60, "color": "yellow"},
-                {"value": 85, "color": "green"}
+                {
+                  "color": "green",
+                  "value": null
+                }
               ]
             }
           }
-        }
-      },
-      {
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 6
+        },
         "id": 4,
-        "title": "데이터셋 품질 지표",
-        "type": "timeseries",
+        "options": {
+          "legend": {
+            "calcs": [],
+            "displayMode": "list",
+            "placement": "bottom",
+            "showLegend": true
+          },
+          "tooltip": {
+            "mode": "single",
+            "sort": "none"
+          }
+        },
         "targets": [
           {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_datasets_with_owner",
             "legendFormat": "소유자 있음",
             "refId": "A"
           },
           {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_datasets_without_owner",
             "legendFormat": "소유자 없음",
             "refId": "B"
           },
           {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_datasets_with_description",
             "legendFormat": "설명 있음",
             "refId": "C"
           },
           {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_datasets_without_description",
             "legendFormat": "설명 없음",
             "refId": "D"
           }
         ],
-        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
-        "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "drawStyle": "line",
-              "fillOpacity": 10
-            }
-          }
-        }
+        "title": "데이터셋 품질 지표",
+        "type": "timeseries"
       },
       {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "hideFrom": {
+                "tooltip": false,
+                "viz": false,
+                "legend": false
+              }
+            },
+            "mappings": []
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 12,
+          "y": 6
+        },
         "id": 5,
-        "title": "플랫폼별 데이터셋 분포",
-        "type": "piechart",
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "showLegend": true,
+            "values": ["value"]
+          },
+          "pieType": "pie",
+          "tooltip": {
+            "mode": "single",
+            "sort": "none"
+          }
+        },
         "targets": [
           {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_datasets_by_platform",
             "legendFormat": "{{platform}}",
             "refId": "A"
           }
         ],
-        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 6},
-        "options": {
-          "legend": {
-            "displayMode": "table",
-            "placement": "right"
-          },
-          "pieType": "pie"
-        }
+        "title": "플랫폼별 데이터셋 분포",
+        "type": "piechart"
       },
       {
-        "id": 6,
-        "title": "메타데이터 품질 요약",
-        "type": "table",
-        "targets": [
-          {
-            "expr": "datahub_datasets_total",
-            "format": "table",
-            "instant": true,
-            "refId": "A"
-          },
-          {
-            "expr": "datahub_datasets_without_owner",
-            "format": "table",
-            "instant": true,
-            "refId": "B"
-          },
-          {
-            "expr": "datahub_datasets_without_description",
-            "format": "table",
-            "instant": true,
-            "refId": "C"
-          },
-          {
-            "expr": "datahub_datasets_without_tags",
-            "format": "table",
-            "instant": true,
-            "refId": "D"
-          }
-        ],
-        "gridPos": {"h": 8, "w": 6, "x": 18, "y": 6},
-        "transformations": [
-          {
-            "id": "organize",
-            "options": {
-              "excludeByName": {},
-              "indexByName": {},
-              "renameByName": {
-                "Value #A": "전체 데이터셋",
-                "Value #B": "소유자 없음",
-                "Value #C": "설명 없음",
-                "Value #D": "태그 없음"
-              }
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 10
+                },
+                {
+                  "color": "red",
+                  "value": 50
+                }
+              ]
             }
           }
-        ]
-      },
-      {
-        "id": 7,
-        "title": "태그 및 용어집 현황",
-        "type": "stat",
-        "targets": [
-          {
-            "expr": "datahub_tags_total",
-            "legendFormat": "태그",
-            "refId": "A"
-          },
-          {
-            "expr": "datahub_glossary_terms_total",
-            "legendFormat": "용어집",
-            "refId": "B"
-          },
-          {
-            "expr": "datahub_domains_total",
-            "legendFormat": "도메인",
-            "refId": "C"
-          }
-        ],
-        "gridPos": {"h": 6, "w": 8, "x": 0, "y": 14},
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 18,
+          "y": 6
+        },
+        "id": 6,
         "options": {
+          "displayMode": "gradient",
+          "minVizHeight": 10,
+          "minVizWidth": 0,
           "orientation": "horizontal",
-          "textMode": "value_and_name",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 8,
-        "title": "데이터 자산 현황",
-        "type": "stat",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "showUnfilled": true
+        },
+        "pluginVersion": "10.0.0",
         "targets": [
           {
-            "expr": "datahub_dashboards_total",
-            "legendFormat": "대시보드",
-            "refId": "A"
-          },
-          {
-            "expr": "datahub_charts_total",
-            "legendFormat": "차트",
-            "refId": "B"
-          },
-          {
-            "expr": "datahub_data_jobs_total",
-            "legendFormat": "데이터 작업",
-            "refId": "C"
-          }
-        ],
-        "gridPos": {"h": 6, "w": 8, "x": 8, "y": 14},
-        "options": {
-          "orientation": "horizontal",
-          "textMode": "value_and_name",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 9,
-        "title": "사용자 및 그룹",
-        "type": "stat",
-        "targets": [
-          {
-            "expr": "datahub_users_total",
-            "legendFormat": "사용자",
-            "refId": "A"
-          },
-          {
-            "expr": "datahub_groups_total",
-            "legendFormat": "그룹",
-            "refId": "B"
-          }
-        ],
-        "gridPos": {"h": 6, "w": 8, "x": 16, "y": 14},
-        "options": {
-          "orientation": "horizontal",
-          "textMode": "value_and_name",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 10,
-        "title": "품질 개선이 필요한 데이터셋",
-        "type": "bargauge",
-        "targets": [
-          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_datasets_without_owner",
             "legendFormat": "소유자 없음",
             "refId": "A"
           },
           {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_datasets_without_description",
             "legendFormat": "설명 없음",
             "refId": "B"
           },
           {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
             "expr": "datahub_datasets_without_tags",
             "legendFormat": "태그 없음",
             "refId": "C"
           }
         ],
-        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient",
-          "showUnfilled": true
-        },
-        "fieldConfig": {
-          "defaults": {
-            "color": {"mode": "palette-classic"},
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 10, "color": "yellow"},
-                {"value": 50, "color": "red"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 11,
-        "title": "Exporter 수집 상태",
-        "type": "timeseries",
-        "targets": [
-          {
-            "expr": "datahub_last_scrape_success",
-            "legendFormat": "수집 성공 (1=성공, 0=실패)",
-            "refId": "A"
-          },
-          {
-            "expr": "datahub_last_scrape_duration_seconds",
-            "legendFormat": "수집 소요 시간 (초)",
-            "refId": "B"
-          }
-        ],
-        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20}
+        "title": "품질 개선 필요 데이터셋",
+        "type": "bargauge"
       }
-    ],
-    "schemaVersion": 38,
-    "version": 1,
-    "refresh": "1m"
-  }
+    ]
+  },
+  "overwrite": true
 }
