@@ -1,0 +1,17 @@
+  datahub-ingestion:
+    image: acryldata/datahub-ingestion:head
+    container_name: datahub-ingestion
+    environment:
+      - DATAHUB_GMS_URL=http://datahub-gms:8080
+      - DATAHUB_GMS_TOKEN=${DATAHUB_GMS_TOKEN:-}
+    volumes:
+      - ./metadata/:/workspace/metadata/
+    command: 
+      - datahub
+      - ingest
+      - -c
+      - /workspace/metadata/csv_enricher.yml
+    depends_on:
+      - datahub-gms
+    networks:
+      - datahub_network

@@ -1,14 +1,13 @@
 source:
   type: csv-enricher
   config:
-    filename: ./datahub_metadata_update.csv
-    write_semantics: PATCH  # PATCH (추가) 또는 OVERRIDE (덮어쓰기)
+    filename: /workspace/metadata/datahub_metadata_update.csv
+    write_semantics: PATCH  # 기존 메타데이터에 추가
     delimiter: ","
     array_delimiter: "|"
+    encoding: "utf-8"
 
 sink:
   type: datahub-rest
   config:
-    server: "http://localhost:8080"
-    # token: "your-token"  # 인증 필요시
-
+    server: "http://datahub-gms:8080"

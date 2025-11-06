@@ -80,3 +80,23 @@ text
 datahub-gms:
   environment:
     - METADATA_SERVICE_AUTH_ENABLED=true
+
+
+
+    ----------------------------------------
+
+Ingestion
+
+# 1. 로컬 디렉토리 구조 생성 (폐쇄망 외부)
+mkdir -p metadata
+
+# 2. CSV 파일 준비 (metadata/datahub_metadata_update.csv)
+# UTF-8 인코딩 필수
+
+# 3. Ingestion recipe 파일 작성 (metadata/csv_enricher.yml)
+
+# 4. 컨테이너 실행 - 폐쇄망 서버에서
+docker-compose up datahub-ingestion
+
+# 5. 완료 후 컨테이너 종료
+docker-compose down datahub-ingestion
