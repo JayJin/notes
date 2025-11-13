@@ -3,7 +3,6 @@ import time
 import logging
 import base64
 import requests
-import json
 from prometheus_client import start_http_server, Gauge, Counter
 
 # 로깅 설정
@@ -18,44 +17,39 @@ DATAHUB_GMS_HOST = os.getenv('DATAHUB_GMS_HOST', 'datahub-gms')
 DATAHUB_GMS_PORT = os.getenv('DATAHUB_GMS_PORT', '8080')
 GMS_URL = f"http://{DATAHUB_GMS_HOST}:{DATAHUB_GMS_PORT}"
 
-PAGE_SIZE = 500
+SCRAPE_INTERVAL = int(os.getenv('SCRAPE_INTERVAL', '60'))
 MAX_RETRIES = 3
 RETRY_DELAY = 5
-SCRAPE_INTERVAL = int(os.getenv('SCRAPE_INTERVAL', '60'))
 
 # Prometheus Metrics
 scrape_errors = Counter('datahub_scrape_errors_total', 'Total scrape errors')
 
+# 전체 메트릭
 total_datasets = Gauge('datahub_datasets_total', '전체 데이터셋 수')
-datasets_by_platform = Gauge('datahub_datasets_by_platform', '플랫폼별 데이터셋 수', ['platform'])
-
-datasets_with_owner = Gauge('datahub_datasets_with_owner', '소유자가 있는 데이터셋')
-datasets_without_owner = Gauge('datahub_datasets_without_owner', '소유자가 없는 데이터셋')
-datasets_with_description = Gauge('datahub_datasets_with_description', '설명이 있는 데이터셋')
-datasets_without_description = Gauge('datahub_datasets_without_description', '설명이 없는 데이터셋')
-datasets_with_tags = Gauge('datahub_datasets_with_tags', '태그가 있는 데이터셋')
-datasets_without_tags = Gauge('datahub_datasets_without_tags', '태그가 없는 데이터셋')
-datasets_with_glossary = Gauge('datahub_datasets_with_glossary', '용어집 연결이 있는 데이터셋')
-datasets_without_glossary = Gauge('datahub_datasets_without_glossary', '용어집 연결이 없는 데이터셋')
-
 total_tags = Gauge('datahub_tags_total', '전체 태그 수')
 total_glossary_terms = Gauge('datahub_glossary_terms_total', '전체 용어집 수')
 total_domains = Gauge('datahub_domains_total', '전체 도메인 수')
 
-datasets_updated_last_week = Gauge('datahub_datasets_updated_last_week', '최근 7일 내 업데이트')
+# DB별 테이블 메트릭
+db_table_count = Gauge('datahub_db_table_count', 'DB별 테이블 수', ['database', 'platform'])
+db_table_with_desc = Gauge('datahub_db_table_with_desc', 'DB별 설명이 있는 테이블 수', ['database', 'platform'])
+db_table_without_desc = Gauge('datahub_db_table_without_desc', 'DB별 설명이 없는 테이블 수', ['database', 'platform'])
+db_table_desc_ratio = Gauge('datahub_db_table_desc_ratio', 'DB별 테이블 설명 등록율', ['database', 'platform'])
 
-total_dashboards = Gauge('datahub_dashboards_total', '전체 대시보드 수')
-total_charts = Gauge('datahub_charts_total', '전체 차트 수')
-total_data_jobs = Gauge('datahub_data_jobs_total', '전체 데이터 작업 수')
-total_users = Gauge('datahub_users_total', '전체 사용자 수')
-total_groups = Gauge('datahub_groups_total', '전체 그룹 수')
+# DB별 컬럼 메트릭
+db_column_count = Gauge('datahub_db_column_count', 'DB별 전체 컬럼 수', ['database', 'platform'])
+db_column_with_desc = Gauge('datahub_db_column_with_desc', 'DB별 설명이 있는 컬럼 수', ['database', 'platform'])
+db_column_without_desc = Gauge('datahub_db_column_without_desc', 'DB별 설명이 없는 컬럼 수', ['database', 'platform'])
+db_column_desc_ratio = Gauge('datahub_db_column_desc_ratio', 'DB별 컬럼 설명 등록율', ['database', 'platform'])
 
-metadata_completeness_ratio = Gauge('datahub_metadata_completeness_ratio', '메타데이터 완성도')
-documentation_coverage_ratio = Gauge('datahub_documentation_coverage_ratio', '문서화 커버리지')
+# 기타 메트릭
+datasets_with_owner = Gauge('datahub_datasets_with_owner', '소유자가 있는 데이터셋')
+datasets_without_owner = Gauge('datahub_datasets_without_owner', '소유자가 없는 데이터셋')
+datasets_with_tags = Gauge('datahub_datasets_with_tags', '태그가 있는 데이터셋')
+datasets_without_tags = Gauge('datahub_datasets_without_tags', '태그가 없는 데이터셋')
 
 last_scrape_success = Gauge('datahub_last_scrape_success', '마지막 수집 성공 여부')
 last_scrape_duration_seconds = Gauge('datahub_last_scrape_duration_seconds', '마지막 수집 소요 시간')
-
 
 def _auth_header():
     """인증 헤더 생성"""
@@ -71,7 +65,6 @@ def _auth_header():
     
     return headers
 
-
 def _post(query: str, variables: dict = None):
     """GraphQL 쿼리 실행"""
     for attempt in range(1, MAX_RETRIES + 1):
@@ -84,7 +77,7 @@ def _post(query: str, variables: dict = None):
                 f"{GMS_URL}/api/graphql",
                 json=payload,
                 headers=_auth_header(),
-                timeout=30
+                timeout=60
             )
             
             if resp.status_code == 500:
@@ -93,7 +86,6 @@ def _post(query: str, variables: dict = None):
                 return None
             
             resp.raise_for_status()
-            
             result = resp.json()
             
             if "errors" in result:
@@ -103,12 +95,6 @@ def _post(query: str, variables: dict = None):
             
             return result.get("data")
         
-        except requests.exceptions.HTTPError as e:
-            log.error(f"HTTP error (attempt {attempt}/{MAX_RETRIES}): {e}")
-            scrape_errors.inc()
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY)
-        
         except Exception as e:
             log.error(f"Request error (attempt {attempt}/{MAX_RETRIES}): {e}")
             scrape_errors.inc()
@@ -117,6 +103,146 @@ def _post(query: str, variables: dict = None):
     
     return None
 
+def get_datasets_by_platform_and_db(platform, db_name=None):
+    """
+    특정 플랫폼 및 데이터베이스의 모든 데이터셋과 스키마 메타데이터 조회
+    """
+    datasets = []
+    start = 0
+    count = 100
+    
+    while True:
+        # 플랫폼과 데이터베이스 이름으로 필터링
+        if db_name:
+            query_text = f'platform:{platform} AND name:{db_name}.*'
+        else:
+            query_text = f'platform:{platform}'
+        
+        query = """
+        query searchDatasets($input: SearchInput!) {
+          search(input: $input) {
+            start
+            count
+            total
+            searchResults {
+              entity {
+                ... on Dataset {
+                  urn
+                  name
+                  platform {
+                    name
+                  }
+                  properties {
+                    description
+                  }
+                  editableProperties {
+                    description
+                  }
+                  schemaMetadata {
+                    fields {
+                      fieldPath
+                      description
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        
+        variables = {
+            "input": {
+                "type": "DATASET",
+                "query": query_text,
+                "start": start,
+                "count": count
+            }
+        }
+        
+        payload = _post(query, variables)
+        
+        if not payload or 'search' not in payload:
+            break
+        
+        results = payload['search']['searchResults']
+        for result in results:
+            if 'entity' in result:
+                datasets.append(result['entity'])
+        
+        total = payload['search']['total']
+        start += count
+        
+        if start >= total:
+            break
+        
+        time.sleep(0.1)  # API 부하 방지
+    
+    return datasets
+
+def analyze_db_metrics(platform, db_name=None):
+    """
+    특정 DB의 테이블 및 컬럼 메트릭 분석
+    """
+    log.info(f"Analyzing metrics for platform={platform}, db={db_name}...")
+    
+    datasets = get_datasets_by_platform_and_db(platform, db_name)
+    
+    if not datasets:
+        log.warning(f"No datasets found for {platform}/{db_name}")
+        return
+    
+    table_count = len(datasets)
+    table_with_desc = 0
+    table_without_desc = 0
+    
+    total_columns = 0
+    columns_with_desc = 0
+    columns_without_desc = 0
+    
+    for dataset in datasets:
+        # 테이블 설명 확인
+        has_table_desc = False
+        
+        if dataset.get('properties') and dataset['properties'].get('description'):
+            has_table_desc = True
+        elif dataset.get('editableProperties') and dataset['editableProperties'].get('description'):
+            has_table_desc = True
+        
+        if has_table_desc:
+            table_with_desc += 1
+        else:
+            table_without_desc += 1
+        
+        # 컬럼 설명 확인
+        schema_metadata = dataset.get('schemaMetadata')
+        if schema_metadata and schema_metadata.get('fields'):
+            for field in schema_metadata['fields']:
+                total_columns += 1
+                if field.get('description'):
+                    columns_with_desc += 1
+                else:
+                    columns_without_desc += 1
+    
+    # 메트릭 설정
+    label_db = db_name if db_name else platform
+    
+    db_table_count.labels(database=label_db, platform=platform).set(table_count)
+    db_table_with_desc.labels(database=label_db, platform=platform).set(table_with_desc)
+    db_table_without_desc.labels(database=label_db, platform=platform).set(table_without_desc)
+    
+    table_desc_ratio = (table_with_desc / table_count * 100) if table_count > 0 else 0
+    db_table_desc_ratio.labels(database=label_db, platform=platform).set(table_desc_ratio)
+    
+    db_column_count.labels(database=label_db, platform=platform).set(total_columns)
+    db_column_with_desc.labels(database=label_db, platform=platform).set(columns_with_desc)
+    db_column_without_desc.labels(database=label_db, platform=platform).set(columns_without_desc)
+    
+    column_desc_ratio = (columns_with_desc / total_columns * 100) if total_columns > 0 else 0
+    db_column_desc_ratio.labels(database=label_db, platform=platform).set(column_desc_ratio)
+    
+    log.info(f"  [{label_db}] Tables: {table_count}, with desc: {table_with_desc} ({table_desc_ratio:.1f}%)")
+    log.info(f"  [{label_db}] Columns: {total_columns}, with desc: {columns_with_desc} ({column_desc_ratio:.1f}%)")
 
 def get_entity_count_simple(entity_type: str):
     """단순 엔티티 수 조회"""
@@ -138,111 +264,6 @@ def get_entity_count_simple(entity_type: str):
     payload = _post(query)
     return payload['search']['total'] if payload and 'search' in payload else 0
 
-
-def get_datasets_with_empty_or_missing_field(field_name: str):
-    """
-    ✅ 필드가 없거나 (hasX=false) 값이 비어있는 데이터셋 수
-    """
-    field_map = {
-        'description': {
-            'hasField': 'hasDescription',
-            'emptyQuery': 'editableProperties.description:""'
-        },
-        'owner': {
-            'hasField': 'hasOwners',
-            'emptyQuery': 'ownership.owners.owner.urn:""'
-        },
-        'tags': {
-            'hasField': 'hasTags',
-            'emptyQuery': 'globalTags.tags.tag.urn:""'
-        },
-        'glossary': {
-            'hasField': 'hasGlossaryTerms',
-            'emptyQuery': 'glossaryTerms.terms.urn:""'
-        }
-    }
-
-    if field_name not in field_map:
-        log.warning(f"Unknown field: {field_name}")
-        return 0
-
-    log.info(f"Checking datasets with empty or missing {field_name}...")
-
-    has_field = field_map[field_name]['hasField']
-    empty_query_value = field_map[field_name]['emptyQuery']
-
-    # 필드가 없는 경우
-    missing_query = f"""
-    query {{
-      search(
-        input: {{
-          type: DATASET
-          filters: [{{ field: "{has_field}", values: ["false"] }}]
-          start: 0
-          count: 1
-        }}
-      ) {{
-        total
-      }}
-    }}
-    """
-
-    # 필드는 있지만 값이 비어있는 경우
-    empty_query = f"""
-    query {{
-      search(
-        input: {{
-          type: DATASET
-          query: "{empty_query_value}"
-          start: 0
-          count: 1
-        }}
-      ) {{
-        total
-      }}
-    }}
-    """
-
-    missing_payload = _post(missing_query)
-    empty_payload = _post(empty_query)
-
-    missing_count = missing_payload['search']['total'] if missing_payload and 'search' in missing_payload else 0
-    empty_count = empty_payload['search']['total'] if empty_payload and 'search' in empty_payload else 0
-
-    total_empty = missing_count + empty_count
-    log.info(f"  Missing or empty {field_name}: {total_empty} (missing={missing_count}, empty={empty_count})")
-
-    return total_empty
-
-
-def get_datasets_by_platform():
-    """플랫폼별 데이터셋 수"""
-    platforms = ['postgres', 'mysql', 'snowflake', 'bigquery', 'kafka']
-    
-    log.info("Fetching datasets by platform...")
-    for platform in platforms:
-        query = f"""
-        query {{
-          search(
-            input: {{
-              type: DATASET
-              query: "platform:{platform}"
-              start: 0
-              count: 1
-            }}
-          ) {{
-            total
-          }}
-        }}
-        """
-        payload = _post(query)
-        if payload and 'search' in payload:
-            count = payload['search']['total']
-            if count > 0:
-                datasets_by_platform.labels(platform=platform).set(count)
-                log.info(f"  Platform {platform}: {count}")
-
-
 def collect_metrics():
     """메트릭 수집"""
     start_time = time.time()
@@ -251,42 +272,24 @@ def collect_metrics():
     log.info("=" * 70)
     
     try:
+        # 전체 데이터셋 수
         total = get_entity_count_simple('DATASET')
         total_datasets.set(total)
         log.info(f"✅ Total datasets: {total}")
-
-        without_owner = get_datasets_with_empty_or_missing_field('owner')
-        datasets_without_owner.set(without_owner)
-        datasets_with_owner.set(max(0, total - without_owner))
-
-        without_desc = get_datasets_with_empty_or_missing_field('description')
-        datasets_without_description.set(without_desc)
-        datasets_with_description.set(max(0, total - without_desc))
-
-        without_tags = get_datasets_with_empty_or_missing_field('tags')
-        datasets_without_tags.set(without_tags)
-        datasets_with_tags.set(max(0, total - without_tags))
-
-        without_glossary = get_datasets_with_empty_or_missing_field('glossary')
-        datasets_without_glossary.set(without_glossary)
-        datasets_with_glossary.set(max(0, total - without_glossary))
-
-        get_datasets_by_platform()
-
+        
+        # Oracle 3개 DB 분석
+        analyze_db_metrics('oracle', 'db1')
+        analyze_db_metrics('oracle', 'db2')
+        analyze_db_metrics('oracle', 'db3')
+        
+        # PostgreSQL 1개 DB 분석
+        analyze_db_metrics('postgres', 'main_db')
+        
+        # 기타 전체 메트릭
         total_tags.set(get_entity_count_simple('TAG'))
         total_glossary_terms.set(get_entity_count_simple('GLOSSARY_TERM'))
         total_domains.set(get_entity_count_simple('DOMAIN'))
-        total_dashboards.set(get_entity_count_simple('DASHBOARD'))
-        total_charts.set(get_entity_count_simple('CHART'))
-        total_data_jobs.set(get_entity_count_simple('DATA_JOB'))
-        total_users.set(get_entity_count_simple('CORP_USER'))
-        total_groups.set(get_entity_count_simple('CORP_GROUP'))
-
-        if total > 0:
-            completeness = (total - max(without_owner, without_desc, without_tags, without_glossary)) / total
-            metadata_completeness_ratio.set(completeness)
-            documentation_coverage_ratio.set((total - without_desc) / total)
-
+        
         duration = time.time() - start_time
         last_scrape_duration_seconds.set(duration)
         last_scrape_success.set(1)
@@ -297,10 +300,9 @@ def collect_metrics():
         last_scrape_success.set(0)
         scrape_errors.inc()
 
-
 if __name__ == "__main__":
     log.info("=" * 70)
-    log.info("DataHub Prometheus Exporter (Extended Version)")
+    log.info("DataHub Prometheus Exporter (DB-specific Version)")
     log.info("=" * 70)
     log.info(f"GMS URL: {GMS_URL}")
     log.info(f"Scrape interval: {SCRAPE_INTERVAL}s")
@@ -309,15 +311,12 @@ if __name__ == "__main__":
     
     start_http_server(9105)
     log.info("✅ Metrics server started at http://localhost:9105/metrics")
-
-    total_datasets.set(0)
-    last_scrape_success.set(0)
-
+    
     try:
         collect_metrics()
     except Exception as e:
         log.error(f"Initial collection error: {e}")
-
+    
     while True:
         try:
             time.sleep(SCRAPE_INTERVAL)
