@@ -1,0 +1,185 @@
+스키마별 전체 테이블 수
+text
+# 전체 테이블 수 (모든 스키마)
+sum(datahub_schema_table_count)
+
+# 플랫폼별 전체 테이블 수
+sum by (platform) (datahub_schema_table_count)
+
+# 스키마별 테이블 수 (Time Series)
+datahub_schema_table_count
+테이블 설명 등록률
+text
+# 전체 평균 등록률 (Gauge)
+avg(datahub_schema_table_desc_ratio)
+
+# 플랫폼별 평균 등록률 (Bar Gauge)
+avg by (platform) (datahub_schema_table_desc_ratio)
+
+# 스키마별 등록률 (Table)
+datahub_schema_table_desc_ratio
+
+# 등록률이 낮은 상위 5개 스키마 (Table)
+topk(5, datahub_schema_table_desc_ratio)
+
+# 등록률이 높은 상위 5개 스키마 (Table)
+bottomk(5, datahub_schema_table_desc_ratio)
+설명이 있는/없는 테이블 수
+text
+# 전체 설명 있는 테이블
+sum(datahub_schema_table_with_desc)
+
+# 전체 설명 없는 테이블
+sum(datahub_schema_table_without_desc)
+
+# 스키마별 설명 있는 테이블 (Stacked Bar Chart)
+datahub_schema_table_with_desc
+
+# 플랫폼별 설명 있는/없는 비율 (Pie Chart)
+sum by (platform) (datahub_schema_table_with_desc)
+sum by (platform) (datahub_schema_table_without_desc)
+2. 컬럼 메트릭
+스키마별 전체 컬럼 수
+text
+# 전체 컬럼 수
+sum(datahub_schema_column_count)
+
+# 플랫폼별 컬럼 수
+sum by (platform) (datahub_schema_column_count)
+
+# 스키마별 컬럼 수 (Time Series)
+datahub_schema_column_count
+컬럼 설명 등록률
+text
+# 전체 평균 등록률 (Gauge)
+avg(datahub_schema_column_desc_ratio)
+
+# 플랫폼별 평균 등록률
+avg by (platform) (datahub_schema_column_desc_ratio)
+
+# 스키마별 컬럼 설명 등록률 (Heatmap)
+datahub_schema_column_desc_ratio
+
+# 등록률 50% 미만 스키마 필터링
+datahub_schema_column_desc_ratio < 50
+설명이 있는/없는 컬럼 수
+text
+# 전체 설명 있는 컬럼
+sum(datahub_schema_column_with_desc)
+
+# 전체 설명 없는 컬럼
+sum(datahub_schema_column_without_desc)
+
+# 플랫폼별 설명 없는 컬럼 (개선이 필요한 영역)
+sum by (platform) (datahub_schema_column_without_desc)
+3. Owner 메트릭
+Owner 등록 현황
+text
+# 전체 Owner 있는 테이블
+sum(datahub_schema_table_with_owner)
+
+# 전체 Owner 없는 테이블
+sum(datahub_schema_table_without_owner)
+
+# 플랫폼별 Owner 등록률 (%)
+sum by (platform) (datahub_schema_table_with_owner) / 
+(sum by (platform) (datahub_schema_table_with_owner) + 
+ sum by (platform) (datahub_schema_table_without_owner)) * 100
+
+# 스키마별 Owner 없는 테이블 (Table)
+datahub_schema_table_without_owner
+4. Tag 메트릭
+Tag 등록 현황
+text
+# 전체 Tag 있는 테이블
+sum(datahub_schema_table_with_tag)
+
+# 전체 Tag 없는 테이블
+sum(datahub_schema_table_without_tag)
+
+# 플랫폼별 Tag 등록률 (%)
+sum by (platform) (datahub_schema_table_with_tag) / 
+(sum by (platform) (datahub_schema_table_with_tag) + 
+ sum by (platform) (datahub_schema_table_without_tag)) * 100
+
+# 스키마별 Tag 없는 테이블
+datahub_schema_table_without_tag
+5. 복합 메트릭 & 대시보드 KPI
+메타데이터 완성도 점수
+text
+# 전체 메타데이터 완성도 (설명 + Owner + Tag 평균)
+(
+  avg(datahub_schema_table_desc_ratio) + 
+  (sum(datahub_schema_table_with_owner) / 
+   (sum(datahub_schema_table_with_owner) + 
+    sum(datahub_schema_table_without_owner)) * 100) +
+  (sum(datahub_schema_table_with_tag) / 
+   (sum(datahub_schema_table_with_tag) + 
+    sum(datahub_schema_table_without_tag)) * 100)
+) / 3
+플랫폼별 종합 점수
+text
+# Oracle 메타데이터 완성도
+(
+  avg(datahub_schema_table_desc_ratio{platform="oracle"}) +
+  avg(datahub_schema_column_desc_ratio{platform="oracle"})
+) / 2
+
+# PostgreSQL 메타데이터 완성도
+(
+  avg(datahub_schema_table_desc_ratio{platform="postgres"}) +
+  avg(datahub_schema_column_desc_ratio{platform="postgres"})
+) / 2
+스크랩 상태 모니터링
+text
+# 마지막 스크랩 성공 여부 (Stat Panel)
+datahub_last_scrape_success
+
+# 마지막 스크랩 소요 시간 (Gauge)
+datahub_last_scrape_duration_seconds
+
+# 마지막 스크랩 시간 (Stat Panel - timestamp to now)
+time() - datahub_last_scrape_timestamp
+6. 변화 추적 (Change over Time)
+시간별 메트릭 변화
+text
+# 지난 1시간 동안 설명 추가된 테이블 수
+increase(datahub_schema_table_with_desc[1h])
+
+# 지난 24시간 설명 등록률 증가량
+delta(datahub_schema_table_desc_ratio[24h])
+
+# 주간 컬럼 설명 개선 추이
+increase(datahub_schema_column_with_desc[7d])
+대시보드 구성 예시
+Row 1: Overview (KPI)
+Panel	Type	Query
+전체 테이블 수	Stat	sum(datahub_schema_table_count)
+테이블 설명 등록률	Gauge	avg(datahub_schema_table_desc_ratio)
+Owner 등록률	Gauge	sum(datahub_schema_table_with_owner) / (sum(datahub_schema_table_with_owner) + sum(datahub_schema_table_without_owner)) * 100
+Tag 등록률	Gauge	sum(datahub_schema_table_with_tag) / (sum(datahub_schema_table_with_tag) + sum(datahub_schema_table_without_tag)) * 100
+Row 2: 플랫폼별 현황
+Panel	Type	Query
+플랫폼별 테이블 수	Bar Chart	sum by (platform) (datahub_schema_table_count)
+플랫폼별 설명 등록률	Bar Gauge	avg by (platform) (datahub_schema_table_desc_ratio)
+설명 있는/없는 비율	Pie Chart	sum by (platform) (datahub_schema_table_with_desc), sum by (platform) (datahub_schema_table_without_desc)
+Row 3: 스키마별 상세
+Panel	Type	Query
+스키마별 등록률	Table	datahub_schema_table_desc_ratio, datahub_schema_column_desc_ratio
+개선이 필요한 스키마	Table	datahub_schema_table_desc_ratio < 50
+스키마별 컬럼 수	Time Series	datahub_schema_column_count
+Row 4: 모니터링
+Panel	Type	Query
+스크랩 성공 여부	Stat	datahub_last_scrape_success
+스크랩 소요 시간	Gauge	datahub_last_scrape_duration_seconds
+최근 업데이트	Stat	time() - datahub_last_scrape_timestamp
+Variables (대시보드 필터)
+Grafana 대시보드에 변수를 추가하여 동적 필터링을 구현할 수 있습니다:​
+
+text
+# Platform 변수
+label_values(datahub_schema_table_count, platform)
+
+# Schema 변수 (Platform에 종속)
+label_values(datahub_schema_table_count{platform="$platform"}, schema)
+이 쿼리들을 사용하면 DataHub 메타데이터 품질을 효과적으로 시각화하고 모니터링할 수 있습니다.​
