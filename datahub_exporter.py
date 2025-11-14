@@ -21,6 +21,10 @@ DATAHUB_GMS_PORT = os.getenv('DATAHUB_GMS_PORT', '8080')
 GMS_URL = f"http://{DATAHUB_GMS_HOST}:{DATAHUB_GMS_PORT}"
 SCRAPE_INTERVAL = int(os.getenv('SCRAPE_INTERVAL', '60'))
 
+# 타겟 플랫폼 설정 (환경 변수로 커스터마이징 가능)
+TARGET_PLATFORMS = os.getenv('TARGET_PLATFORMS', 'oracle,postgresql').split(',')
+TARGET_PLATFORMS = [p.strip().lower() for p in TARGET_PLATFORMS if p.strip()]
+
 # --------------------------------------------------------------
 # Prometheus metrics 정의
 # --------------------------------------------------------------
@@ -44,27 +48,25 @@ schema_tables_without_tag = Gauge('datahub_schema_table_without_tag', 'Tables wi
 # DataHub API
 # --------------------------------------------------------------
 
-def get_all_schemas():
+def get_all_platforms():
     """
-    DataHub에서 ingestion된 모든 dataset의 platform/schema 목록을 자동으로 추출한다.
-    반환 형태: [(platform, schema_name), ...]
+    DataHub에서 모든 플랫폼 목록을 조회
     """
-    log.info("Fetching all schemas from DataHub...")
-
+    log.info("Fetching all platforms from DataHub...")
+    
     query = """
-    query listDatasets {
-      listUrns(input: { type: DATASET, start: 0, count: 99999 })
+    query listPlatforms {
+      listUrns(input: { type: DATA_PLATFORM, start: 0, count: 1000 })
     }
     """
-
+    
     try:
         resp = requests.post(f"{GMS_URL}/api/graphql", json={"query": query}, timeout=30)
         
         if resp.status_code != 200:
-            log.error(f"Failed to list datasets: {resp.status_code} - {resp.text}")
+            log.error(f"Failed to list platforms: {resp.status_code} - {resp.text}")
             return []
-
-        # None 체크 추가
+        
         response_json = resp.json()
         if response_json is None:
             log.error("API returned None response")
@@ -78,17 +80,95 @@ def get_all_schemas():
         urns = data.get('listUrns', [])
         if urns is None:
             urns = []
-            
-        log.info(f"Retrieved {len(urns)} dataset URNs")
-
-        results = set()
-
+        
+        platforms = []
         for urn in urns:
+            # URN 형식: urn:li:dataPlatform:oracle
+            if urn and isinstance(urn, str) and "dataPlatform:" in urn:
+                platform = urn.split("dataPlatform:")[-1]
+                platforms.append(platform.lower())
+        
+        log.info(f"Found platforms: {sorted(set(platforms))}")
+        return list(set(platforms))
+        
+    except Exception as e:
+        log.error(f"Error fetching platforms: {e}", exc_info=True)
+        return []
+
+
+def get_schemas_for_platform(platform):
+    """
+    특정 플랫폼의 모든 스키마 목록을 자동으로 추출한다.
+    반환 형태: [schema_name1, schema_name2, ...]
+    """
+    log.info(f"Fetching schemas for platform={platform}...")
+
+    query = """
+    query search($input: SearchInput!) {
+      search(input: $input) {
+        total
+        entities {
+          urn
+        }
+      }
+    }
+    """
+
+    variables = {
+        "input": {
+            "type": "DATASET",
+            "query": "*",
+            "filters": [
+                {
+                    "field": "platform",
+                    "values": [f"urn:li:dataPlatform:{platform}"]
+                }
+            ],
+            "start": 0,
+            "count": 10000
+        }
+    }
+
+    try:
+        resp = requests.post(f"{GMS_URL}/api/graphql", json={"query": query, "variables": variables}, timeout=30)
+        
+        if resp.status_code != 200:
+            log.error(f"Failed to get datasets for {platform}: {resp.status_code} - {resp.text}")
+            return []
+
+        response_json = resp.json()
+        if response_json is None:
+            log.error(f"API returned None response for platform {platform}")
+            return []
+        
+        data = response_json.get('data')
+        if data is None:
+            log.error(f"API response has no 'data' field for platform {platform}")
+            return []
+            
+        search_result = data.get('search')
+        if search_result is None:
+            log.error(f"API response has no 'search' field for platform {platform}")
+            return []
+            
+        entities = search_result.get('entities', [])
+        if entities is None:
+            entities = []
+
+        log.info(f"Retrieved {len(entities)} dataset URNs for platform {platform}")
+
+        schemas = set()
+
+        for entity in entities:
+            if entity is None:
+                continue
+                
+            urn = entity.get('urn', '')
+            if not urn:
+                continue
+            
             # 예시: urn:li:dataset:(urn:li:dataPlatform:oracle,HR.EMPLOYEES,PROD)
             try:
-                if not urn or not isinstance(urn, str):
-                    continue
-                    
                 if "(" not in urn or ")" not in urn:
                     continue
                     
@@ -98,35 +178,29 @@ def get_all_schemas():
                 if len(parts) < 2:
                     continue
                     
-                platform_part = parts[0]
                 name_part = parts[1]
-
-                platform = platform_part.replace("urn:li:dataPlatform:", "")
                 
                 # Oracle/Postgres에서는 보통 name_part = "SCHEMA.TABLE"
                 if "." in name_part:
                     schema = name_part.split(".")[0]
-                    results.add((platform, schema))
+                    schemas.add(schema)
                     
             except Exception as e:
                 log.debug(f"Failed to parse URN {urn}: {e}")
                 continue
 
-        log.info(f"Detected {len(results)} schemas: {sorted(results)}")
-        return list(results)
+        schemas_list = sorted(list(schemas))
+        log.info(f"Detected {len(schemas_list)} schemas for {platform}: {schemas_list}")
+        return schemas_list
         
-    except requests.exceptions.RequestException as e:
-        log.error(f"Network error fetching schemas: {e}")
-        return []
     except Exception as e:
-        log.error(f"Error fetching schemas: {e}", exc_info=True)
+        log.error(f"Error fetching schemas for {platform}: {e}", exc_info=True)
         return []
 
 
 def get_datasets_by_platform_and_schema(platform, schema_name):
     """
     특정 platform/schema의 모든 Dataset metadata 전체 조회
-    schema 필터는 지원되지 않으므로 platform으로만 필터링 후 client-side에서 schema로 필터링
     """
     log.info(f"Fetching datasets for platform={platform}, schema={schema_name}")
     
@@ -168,7 +242,6 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
     }
     """
 
-    # DataHub GraphQL API는 values를 배열로 요구함
     variables = {
         "input": {
             "type": "DATASET",
@@ -192,7 +265,6 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
             log.error(f"Failed dataset search for {platform}: {resp.status_code} - {resp.text[:500]}")
             return []
 
-        # None 체크 추가
         response_json = resp.json()
         if response_json is None:
             log.error(f"API returned None response for {platform}/{schema_name}")
@@ -201,7 +273,6 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
         data = response_json.get("data")
         if data is None:
             log.error(f"API response has no 'data' field for {platform}/{schema_name}")
-            log.error(f"Full response: {response_json}")
             return []
             
         search_result = data.get("search")
@@ -227,7 +298,6 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
             if not urn:
                 continue
             
-            # URN 형식: urn:li:dataset:(urn:li:dataPlatform:oracle,SCHEMA.TABLE,PROD)
             try:
                 if "(" not in urn or ")" not in urn:
                     continue
@@ -253,9 +323,6 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
         log.info(f"Filtered to {len(filtered)} datasets for schema={schema_name}")
         return filtered
         
-    except requests.exceptions.RequestException as e:
-        log.error(f"Network error querying datasets: {e}")
-        return []
     except Exception as e:
         log.error(f"Error querying datasets for {platform}/{schema_name}: {e}", exc_info=True)
         return []
@@ -311,7 +378,6 @@ def analyze_schema_metrics(platform, schema_name):
             # 테이블 설명 확인
             has_table_desc = False
 
-            # properties.description 또는 editableProperties.description 확인
             properties = dataset.get('properties')
             if properties and properties.get('description'):
                 desc = properties['description'].strip()
@@ -391,9 +457,9 @@ def analyze_schema_metrics(platform, schema_name):
         schema_tables_with_tag.labels(schema=schema_name, platform=platform).set(tables_with_tag)
         schema_tables_without_tag.labels(schema=schema_name, platform=platform).set(tables_without_tag)
 
-        log.info(f"[{schema_name}] Tables: {table_count}, with desc: {table_with_desc} ({table_desc_ratio:.1f}%)")
-        log.info(f"[{schema_name}] Columns: {total_columns}, with desc: {columns_with_desc} ({column_desc_ratio:.1f}%)")
-        log.info(f"[{schema_name}] Owners: {tables_with_owner}/{table_count}, Tags: {tables_with_tag}/{table_count}")
+        log.info(f"[{platform}/{schema_name}] Tables: {table_count}, with desc: {table_with_desc} ({table_desc_ratio:.1f}%)")
+        log.info(f"[{platform}/{schema_name}] Columns: {total_columns}, with desc: {columns_with_desc} ({column_desc_ratio:.1f}%)")
+        log.info(f"[{platform}/{schema_name}] Owners: {tables_with_owner}/{table_count}, Tags: {tables_with_tag}/{table_count}")
         
     except Exception as e:
         log.error(f"Error analyzing metrics for {platform}/{schema_name}: {e}", exc_info=True)
@@ -404,6 +470,8 @@ def analyze_schema_metrics(platform, schema_name):
 # --------------------------------------------------------------
 def main():
     log.info("Starting DataHub exporter...")
+    log.info(f"Target platforms: {TARGET_PLATFORMS}")
+    
     start_http_server(8000)
     log.info("Prometheus metrics server started on port 8000")
 
@@ -412,18 +480,36 @@ def main():
             log.info("=" * 60)
             log.info("Starting new scrape cycle...")
             
-            # 1. 사용 가능한 플랫폼/스키마 자동 탐색
-            schemas = get_all_schemas()
-
-            if not schemas:
-                log.warning("No schemas detected. Will retry in next cycle.")
+            # 1. DataHub에 존재하는 모든 플랫폼 조회
+            all_platforms = get_all_platforms()
+            
+            # 2. 타겟 플랫폼 필터링 (oracle, postgresql만)
+            target_platforms = [p for p in all_platforms if p in TARGET_PLATFORMS]
+            
+            if not target_platforms:
+                log.warning(f"No target platforms found in DataHub. Available: {all_platforms}")
             else:
-                # 2. 각 플랫폼/스키마별 메트릭 분석 실행
-                for platform, schema_name in schemas:
+                log.info(f"Processing platforms: {target_platforms}")
+                
+                # 3. 각 플랫폼별로 스키마 자동 탐색
+                for platform in target_platforms:
                     try:
-                        analyze_schema_metrics(platform, schema_name)
+                        log.info(f"Processing platform: {platform}")
+                        schemas = get_schemas_for_platform(platform)
+                        
+                        if not schemas:
+                            log.warning(f"No schemas found for platform {platform}")
+                            continue
+                        
+                        # 4. 각 스키마별 메트릭 수집
+                        for schema_name in schemas:
+                            try:
+                                analyze_schema_metrics(platform, schema_name)
+                            except Exception as e:
+                                log.error(f"Failed to analyze {platform}/{schema_name}: {e}", exc_info=True)
+                                
                     except Exception as e:
-                        log.error(f"Failed to analyze {platform}/{schema_name}: {e}", exc_info=True)
+                        log.error(f"Failed to process platform {platform}: {e}", exc_info=True)
 
             log.info(f"Scrape cycle completed. Sleeping for {SCRAPE_INTERVAL} seconds...")
 
