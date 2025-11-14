@@ -64,7 +64,21 @@ def get_all_schemas():
             log.error(f"Failed to list datasets: {resp.status_code} - {resp.text}")
             return []
 
-        urns = resp.json().get('data', {}).get('listUrns', [])
+        # None 체크 추가
+        response_json = resp.json()
+        if response_json is None:
+            log.error("API returned None response")
+            return []
+        
+        data = response_json.get('data')
+        if data is None:
+            log.error("API response has no 'data' field")
+            return []
+            
+        urns = data.get('listUrns', [])
+        if urns is None:
+            urns = []
+            
         log.info(f"Retrieved {len(urns)} dataset URNs")
 
         results = set()
@@ -72,6 +86,12 @@ def get_all_schemas():
         for urn in urns:
             # 예시: urn:li:dataset:(urn:li:dataPlatform:oracle,HR.EMPLOYEES,PROD)
             try:
+                if not urn or not isinstance(urn, str):
+                    continue
+                    
+                if "(" not in urn or ")" not in urn:
+                    continue
+                    
                 inside = urn.split("(")[1].split(")")[0]
                 parts = inside.split(",")
                 
@@ -95,8 +115,11 @@ def get_all_schemas():
         log.info(f"Detected {len(results)} schemas: {sorted(results)}")
         return list(results)
         
+    except requests.exceptions.RequestException as e:
+        log.error(f"Network error fetching schemas: {e}")
+        return []
     except Exception as e:
-        log.error(f"Error fetching schemas: {e}")
+        log.error(f"Error fetching schemas: {e}", exc_info=True)
         return []
 
 
@@ -169,20 +192,46 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
             log.error(f"Failed dataset search for {platform}: {resp.status_code} - {resp.text[:500]}")
             return []
 
-        data = resp.json().get("data", {})
-        search_result = data.get("search", {})
+        # None 체크 추가
+        response_json = resp.json()
+        if response_json is None:
+            log.error(f"API returned None response for {platform}/{schema_name}")
+            return []
+        
+        data = response_json.get("data")
+        if data is None:
+            log.error(f"API response has no 'data' field for {platform}/{schema_name}")
+            log.error(f"Full response: {response_json}")
+            return []
+            
+        search_result = data.get("search")
+        if search_result is None:
+            log.error(f"API response has no 'search' field for {platform}/{schema_name}")
+            return []
+            
         total = search_result.get("total", 0)
-        all_entities = search_result.get("entities", [])
+        all_entities = search_result.get("entities")
+        
+        if all_entities is None:
+            all_entities = []
         
         log.info(f"Platform {platform}: Retrieved {len(all_entities)} datasets (total: {total})")
 
         # Client-side 필터링: schema로 필터
         filtered = []
         for entity in all_entities:
+            if entity is None:
+                continue
+                
             urn = entity.get("urn", "")
+            if not urn:
+                continue
             
             # URN 형식: urn:li:dataset:(urn:li:dataPlatform:oracle,SCHEMA.TABLE,PROD)
             try:
+                if "(" not in urn or ")" not in urn:
+                    continue
+                    
                 inside = urn.split("(")[1].split(")")[0]
                 parts = inside.split(",")
                 
@@ -204,8 +253,11 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
         log.info(f"Filtered to {len(filtered)} datasets for schema={schema_name}")
         return filtered
         
+    except requests.exceptions.RequestException as e:
+        log.error(f"Network error querying datasets: {e}")
+        return []
     except Exception as e:
-        log.error(f"Error querying datasets: {e}")
+        log.error(f"Error querying datasets for {platform}/{schema_name}: {e}", exc_info=True)
         return []
 
 
@@ -213,124 +265,138 @@ def analyze_schema_metrics(platform, schema_name):
     """특정 스키마의 테이블 및 컬럼 메트릭 분석"""
     log.info(f"Analyzing metrics for platform={platform}, schema={schema_name}...")
     
-    datasets = get_datasets_by_platform_and_schema(platform, schema_name)
-    
-    if not datasets:
-        log.warning(f"No datasets found for {platform}/{schema_name}")
-        # 메트릭을 0으로 설정
-        schema_table_count.labels(schema=schema_name, platform=platform).set(0)
-        schema_table_with_desc.labels(schema=schema_name, platform=platform).set(0)
-        schema_table_without_desc.labels(schema=schema_name, platform=platform).set(0)
-        schema_table_desc_ratio.labels(schema=schema_name, platform=platform).set(0)
-        schema_column_count.labels(schema=schema_name, platform=platform).set(0)
-        schema_column_with_desc.labels(schema=schema_name, platform=platform).set(0)
-        schema_column_without_desc.labels(schema=schema_name, platform=platform).set(0)
-        schema_column_desc_ratio.labels(schema=schema_name, platform=platform).set(0)
-        schema_tables_with_owner.labels(schema=schema_name, platform=platform).set(0)
-        schema_tables_without_owner.labels(schema=schema_name, platform=platform).set(0)
-        schema_tables_with_tag.labels(schema=schema_name, platform=platform).set(0)
-        schema_tables_without_tag.labels(schema=schema_name, platform=platform).set(0)
-        return
-
-    # 첫 번째 데이터셋 로깅 (디버깅용)
-    if datasets:
-        first_dataset = datasets[0]
-        log.info(f"Sample dataset URN: {first_dataset.get('urn')}")
-        log.info(f"Sample dataset properties: {first_dataset.get('properties')}")
-
-    table_count = len(datasets)
-    table_with_desc = 0
-    table_without_desc = 0
-    
-    tables_with_owner = 0
-    tables_without_owner = 0
-    
-    tables_with_tag = 0
-    tables_without_tag = 0
-    
-    total_columns = 0
-    columns_with_desc = 0
-    columns_without_desc = 0
-
-    for dataset in datasets:
-        # 테이블 설명 확인
-        has_table_desc = False
-
-        # properties.description 또는 editableProperties.description 확인
-        if dataset.get('properties') and dataset['properties'].get('description'):
-            desc = dataset['properties']['description'].strip()
-            if desc:
-                has_table_desc = True
-
-        if not has_table_desc and dataset.get('editableProperties') and dataset['editableProperties'].get('description'):
-            desc = dataset['editableProperties']['description'].strip()
-            if desc:
-                has_table_desc = True
-
-        if has_table_desc:
-            table_with_desc += 1
-        else:
-            table_without_desc += 1
-
-        # Owner 확인
-        has_owner = False
-        ownership = dataset.get('ownership')
-        if ownership and ownership.get('owners'):
-            if len(ownership['owners']) > 0:
-                has_owner = True
+    try:
+        datasets = get_datasets_by_platform_and_schema(platform, schema_name)
         
-        if has_owner:
-            tables_with_owner += 1
-        else:
-            tables_without_owner += 1
+        if not datasets:
+            log.warning(f"No datasets found for {platform}/{schema_name}")
+            # 메트릭을 0으로 설정
+            schema_table_count.labels(schema=schema_name, platform=platform).set(0)
+            schema_table_with_desc.labels(schema=schema_name, platform=platform).set(0)
+            schema_table_without_desc.labels(schema=schema_name, platform=platform).set(0)
+            schema_table_desc_ratio.labels(schema=schema_name, platform=platform).set(0)
+            schema_column_count.labels(schema=schema_name, platform=platform).set(0)
+            schema_column_with_desc.labels(schema=schema_name, platform=platform).set(0)
+            schema_column_without_desc.labels(schema=schema_name, platform=platform).set(0)
+            schema_column_desc_ratio.labels(schema=schema_name, platform=platform).set(0)
+            schema_tables_with_owner.labels(schema=schema_name, platform=platform).set(0)
+            schema_tables_without_owner.labels(schema=schema_name, platform=platform).set(0)
+            schema_tables_with_tag.labels(schema=schema_name, platform=platform).set(0)
+            schema_tables_without_tag.labels(schema=schema_name, platform=platform).set(0)
+            return
 
-        # Tag 확인
-        has_tag = False
-        tags_data = dataset.get('tags')
-        if tags_data and tags_data.get('tags'):
-            if len(tags_data['tags']) > 0:
-                has_tag = True
+        # 첫 번째 데이터셋 로깅 (디버깅용)
+        if datasets:
+            first_dataset = datasets[0]
+            log.info(f"Sample dataset URN: {first_dataset.get('urn')}")
+
+        table_count = len(datasets)
+        table_with_desc = 0
+        table_without_desc = 0
         
-        if has_tag:
-            tables_with_tag += 1
-        else:
-            tables_without_tag += 1
+        tables_with_owner = 0
+        tables_without_owner = 0
+        
+        tables_with_tag = 0
+        tables_without_tag = 0
+        
+        total_columns = 0
+        columns_with_desc = 0
+        columns_without_desc = 0
 
-        # 컬럼 설명 확인
-        schema_metadata = dataset.get('schemaMetadata')
-        if schema_metadata and schema_metadata.get('fields'):
-            for field in schema_metadata['fields']:
-                total_columns += 1
-                field_desc = field.get('description', '').strip()
-                if field_desc:
-                    columns_with_desc += 1
-                else:
-                    columns_without_desc += 1
+        for dataset in datasets:
+            if dataset is None:
+                continue
+                
+            # 테이블 설명 확인
+            has_table_desc = False
 
-    # 메트릭 설정
-    schema_table_count.labels(schema=schema_name, platform=platform).set(table_count)
-    schema_table_with_desc.labels(schema=schema_name, platform=platform).set(table_with_desc)
-    schema_table_without_desc.labels(schema=schema_name, platform=platform).set(table_without_desc)
+            # properties.description 또는 editableProperties.description 확인
+            properties = dataset.get('properties')
+            if properties and properties.get('description'):
+                desc = properties['description'].strip()
+                if desc:
+                    has_table_desc = True
 
-    table_desc_ratio = (table_with_desc / table_count * 100) if table_count > 0 else 0
-    schema_table_desc_ratio.labels(schema=schema_name, platform=platform).set(table_desc_ratio)
+            editable_props = dataset.get('editableProperties')
+            if not has_table_desc and editable_props and editable_props.get('description'):
+                desc = editable_props['description'].strip()
+                if desc:
+                    has_table_desc = True
 
-    schema_column_count.labels(schema=schema_name, platform=platform).set(total_columns)
-    schema_column_with_desc.labels(schema=schema_name, platform=platform).set(columns_with_desc)
-    schema_column_without_desc.labels(schema=schema_name, platform=platform).set(columns_without_desc)
+            if has_table_desc:
+                table_with_desc += 1
+            else:
+                table_without_desc += 1
 
-    column_desc_ratio = (columns_with_desc / total_columns * 100) if total_columns > 0 else 0
-    schema_column_desc_ratio.labels(schema=schema_name, platform=platform).set(column_desc_ratio)
+            # Owner 확인
+            has_owner = False
+            ownership = dataset.get('ownership')
+            if ownership:
+                owners = ownership.get('owners')
+                if owners and isinstance(owners, list) and len(owners) > 0:
+                    has_owner = True
+            
+            if has_owner:
+                tables_with_owner += 1
+            else:
+                tables_without_owner += 1
 
-    schema_tables_with_owner.labels(schema=schema_name, platform=platform).set(tables_with_owner)
-    schema_tables_without_owner.labels(schema=schema_name, platform=platform).set(tables_without_owner)
+            # Tag 확인
+            has_tag = False
+            tags_data = dataset.get('tags')
+            if tags_data:
+                tags = tags_data.get('tags')
+                if tags and isinstance(tags, list) and len(tags) > 0:
+                    has_tag = True
+            
+            if has_tag:
+                tables_with_tag += 1
+            else:
+                tables_without_tag += 1
 
-    schema_tables_with_tag.labels(schema=schema_name, platform=platform).set(tables_with_tag)
-    schema_tables_without_tag.labels(schema=schema_name, platform=platform).set(tables_without_tag)
+            # 컬럼 설명 확인
+            schema_metadata = dataset.get('schemaMetadata')
+            if schema_metadata:
+                fields = schema_metadata.get('fields')
+                if fields and isinstance(fields, list):
+                    for field in fields:
+                        if field is None:
+                            continue
+                        total_columns += 1
+                        field_desc = field.get('description', '').strip()
+                        if field_desc:
+                            columns_with_desc += 1
+                        else:
+                            columns_without_desc += 1
 
-    log.info(f"[{schema_name}] Tables: {table_count}, with desc: {table_with_desc} ({table_desc_ratio:.1f}%)")
-    log.info(f"[{schema_name}] Columns: {total_columns}, with desc: {columns_with_desc} ({column_desc_ratio:.1f}%)")
-    log.info(f"[{schema_name}] Owners: {tables_with_owner}/{table_count}, Tags: {tables_with_tag}/{table_count}")
+        # 메트릭 설정
+        schema_table_count.labels(schema=schema_name, platform=platform).set(table_count)
+        schema_table_with_desc.labels(schema=schema_name, platform=platform).set(table_with_desc)
+        schema_table_without_desc.labels(schema=schema_name, platform=platform).set(table_without_desc)
+
+        table_desc_ratio = (table_with_desc / table_count * 100) if table_count > 0 else 0
+        schema_table_desc_ratio.labels(schema=schema_name, platform=platform).set(table_desc_ratio)
+
+        schema_column_count.labels(schema=schema_name, platform=platform).set(total_columns)
+        schema_column_with_desc.labels(schema=schema_name, platform=platform).set(columns_with_desc)
+        schema_column_without_desc.labels(schema=schema_name, platform=platform).set(columns_without_desc)
+
+        column_desc_ratio = (columns_with_desc / total_columns * 100) if total_columns > 0 else 0
+        schema_column_desc_ratio.labels(schema=schema_name, platform=platform).set(column_desc_ratio)
+
+        schema_tables_with_owner.labels(schema=schema_name, platform=platform).set(tables_with_owner)
+        schema_tables_without_owner.labels(schema=schema_name, platform=platform).set(tables_without_owner)
+
+        schema_tables_with_tag.labels(schema=schema_name, platform=platform).set(tables_with_tag)
+        schema_tables_without_tag.labels(schema=schema_name, platform=platform).set(tables_without_tag)
+
+        log.info(f"[{schema_name}] Tables: {table_count}, with desc: {table_with_desc} ({table_desc_ratio:.1f}%)")
+        log.info(f"[{schema_name}] Columns: {total_columns}, with desc: {columns_with_desc} ({column_desc_ratio:.1f}%)")
+        log.info(f"[{schema_name}] Owners: {tables_with_owner}/{table_count}, Tags: {tables_with_tag}/{table_count}")
+        
+    except Exception as e:
+        log.error(f"Error analyzing metrics for {platform}/{schema_name}: {e}", exc_info=True)
 
 
 # --------------------------------------------------------------
@@ -362,7 +428,7 @@ def main():
             log.info(f"Scrape cycle completed. Sleeping for {SCRAPE_INTERVAL} seconds...")
 
         except Exception as e:
-            log.exception("Scrape cycle failed with error")
+            log.error(f"Main loop error: {e}", exc_info=True)
 
         time.sleep(SCRAPE_INTERVAL)
 
