@@ -20,6 +20,7 @@ DATAHUB_GMS_HOST = os.getenv('DATAHUB_GMS_HOST', 'datahub-gms')
 DATAHUB_GMS_PORT = os.getenv('DATAHUB_GMS_PORT', '8080')
 GMS_URL = f"http://{DATAHUB_GMS_HOST}:{DATAHUB_GMS_PORT}"
 SCRAPE_INTERVAL = int(os.getenv('SCRAPE_INTERVAL', '60'))
+METRICS_PORT = int(os.getenv('METRICS_PORT', '9105'))
 
 # 타겟 플랫폼 설정 (환경 변수로 커스터마이징 가능)
 TARGET_PLATFORMS = os.getenv('TARGET_PLATFORMS', 'oracle,postgres,postgresql').split(',')
@@ -43,6 +44,11 @@ schema_tables_without_owner = Gauge('datahub_schema_table_without_owner', 'Table
 
 schema_tables_with_tag = Gauge('datahub_schema_table_with_tag', 'Tables with tags', ['schema', 'platform'])
 schema_tables_without_tag = Gauge('datahub_schema_table_without_tag', 'Tables without tags', ['schema', 'platform'])
+
+# 수집 상태 메트릭
+last_scrape_success = Gauge('datahub_last_scrape_success', 'Last scrape success (1=success, 0=failure)')
+last_scrape_duration_seconds = Gauge('datahub_last_scrape_duration_seconds', 'Last scrape duration in seconds')
+last_scrape_timestamp = Gauge('datahub_last_scrape_timestamp', 'Last scrape timestamp')
 
 # --------------------------------------------------------------
 # DataHub API
@@ -142,7 +148,7 @@ def get_all_platforms_and_schemas():
         resp = requests.post(f"{GMS_URL}/api/graphql", json={"query": query, "variables": variables}, timeout=30)
         
         if resp.status_code != 200:
-            log.error(f"Failed to search datasets: {resp.status_code} - {resp.text}")
+            log.error(f"Failed to search datasets: {resp.status_code} - {resp.text[:500]}")
             return {}
 
         response_json = resp.json()
@@ -158,7 +164,6 @@ def get_all_platforms_and_schemas():
         data = response_json.get('data')
         if data is None:
             log.error("API response has no 'data' field")
-            log.error(f"Full response: {response_json}")
             return {}
         
         search_result = data.get('search')
@@ -172,14 +177,6 @@ def get_all_platforms_and_schemas():
         
         total = search_result.get('total', 0)
         log.info(f"Retrieved {len(search_results)} dataset URNs (total: {total})")
-
-        # 디버깅: 첫 몇 개 URN 출력
-        if search_results:
-            log.info(f"Sample URNs (first 3):")
-            for i, result in enumerate(search_results[:3]):
-                entity = result.get('entity', {})
-                urn = entity.get('urn', '')
-                log.info(f"  {i+1}. {urn}")
 
         # platform별 schema 수집
         platform_schemas = {}
@@ -321,7 +318,6 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
         data = response_json.get("data")
         if data is None:
             log.error(f"API response has no 'data' field for {platform}/{schema_name}")
-            log.error(f"Full response: {response_json}")
             return []
             
         search_result = data.get("search")
@@ -362,14 +358,6 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
                 filtered.append(entity)
 
         log.info(f"Filtered to {len(filtered)} datasets for schema={schema_name}")
-        
-        # 디버깅: 첫 몇 개 dataset 이름 출력
-        if filtered:
-            log.info(f"Sample datasets in {schema_name} (first 3):")
-            for i, entity in enumerate(filtered[:3]):
-                urn = entity.get("urn", "")
-                _, dataset_name, _ = parse_dataset_urn(urn)
-                log.info(f"  {i+1}. {dataset_name}")
         
         return filtered
         
@@ -424,7 +412,7 @@ def analyze_schema_metrics(platform, schema_name):
             has_table_desc = False
 
             properties = dataset.get('properties')
-            if properties and properties.get('description'):
+            if properties:
                 desc = properties.get('description')
                 if desc and isinstance(desc, str) and desc.strip():
                     has_table_desc = True
@@ -516,65 +504,99 @@ def analyze_schema_metrics(platform, schema_name):
         log.error(f"Error analyzing metrics for {platform}/{schema_name}: {e}", exc_info=True)
 
 
+def collect_metrics():
+    """메트릭 수집 메인 함수"""
+    start_time = time.time()
+    
+    try:
+        log.info("")
+        log.info("=" * 60)
+        log.info("Starting metric collection...")
+        log.info("=" * 60)
+        
+        # 1. DataHub에서 모든 플랫폼과 스키마를 한 번에 조회
+        platform_schemas = get_all_platforms_and_schemas()
+        
+        if not platform_schemas:
+            log.warning("⚠ No platforms or schemas found in DataHub")
+            log.warning("Please check:")
+            log.warning(f"  1. DataHub GMS is accessible at {GMS_URL}")
+            log.warning(f"  2. Datasets have been ingested into DataHub")
+            log.warning(f"  3. Target platforms ({TARGET_PLATFORMS}) match ingested platforms")
+        else:
+            log.info(f"✓ Found {len(platform_schemas)} platform(s): {list(platform_schemas.keys())}")
+            
+            # 2. 각 플랫폼/스키마별 메트릭 수집
+            total_schemas = sum(len(schemas) for schemas in platform_schemas.values())
+            log.info(f"✓ Total schemas to process: {total_schemas}")
+            log.info("")
+            
+            for platform, schemas in platform_schemas.items():
+                log.info(f"Processing platform: {platform} ({len(schemas)} schemas)")
+                
+                for schema_name in schemas:
+                    try:
+                        analyze_schema_metrics(platform, schema_name)
+                    except Exception as e:
+                        log.error(f"✗ Failed to analyze {platform}/{schema_name}: {e}", exc_info=True)
+                
+                log.info(f"✓ Completed platform: {platform}")
+                log.info("")
+
+        duration = time.time() - start_time
+        last_scrape_duration_seconds.set(duration)
+        last_scrape_success.set(1)
+        last_scrape_timestamp.set(time.time())
+        
+        log.info("=" * 60)
+        log.info(f"✓ Metric collection completed in {duration:.2f}s")
+        log.info("=" * 60)
+
+    except Exception as e:
+        log.error(f"✗ Metric collection error: {e}", exc_info=True)
+        last_scrape_success.set(0)
+        last_scrape_timestamp.set(time.time())
+
+
 # --------------------------------------------------------------
 # Main Loop
 # --------------------------------------------------------------
 def main():
     log.info("=" * 60)
-    log.info("Starting DataHub Exporter")
+    log.info("DataHub Prometheus Exporter")
     log.info("=" * 60)
     log.info(f"Target platforms: {TARGET_PLATFORMS}")
     log.info(f"DataHub GMS URL: {GMS_URL}")
     log.info(f"Scrape interval: {SCRAPE_INTERVAL} seconds")
+    log.info(f"Metrics port: {METRICS_PORT}")
     
-    start_http_server(8000)
-    log.info("Prometheus metrics server started on port 8000")
+    # Prometheus metrics 서버 시작
+    start_http_server(METRICS_PORT)
+    log.info(f"✓ Prometheus metrics server started on port {METRICS_PORT}")
+    log.info(f"✓ Metrics available at http://localhost:{METRICS_PORT}/metrics")
     log.info("=" * 60)
 
+    # 초기 메트릭 설정
+    last_scrape_success.set(0)
+    last_scrape_duration_seconds.set(0)
+    last_scrape_timestamp.set(0)
+
+    # 첫 번째 수집 실행
+    try:
+        collect_metrics()
+    except Exception as e:
+        log.error(f"Initial collection error: {e}", exc_info=True)
+
+    # 주기적 수집 루프
     while True:
         try:
-            log.info("")
-            log.info("=" * 60)
-            log.info("Starting new scrape cycle...")
-            log.info("=" * 60)
-            
-            # 1. DataHub에서 모든 플랫폼과 스키마를 한 번에 조회
-            platform_schemas = get_all_platforms_and_schemas()
-            
-            if not platform_schemas:
-                log.warning("⚠ No platforms or schemas found in DataHub")
-                log.warning("Please check:")
-                log.warning(f"  1. DataHub GMS is accessible at {GMS_URL}")
-                log.warning(f"  2. Datasets have been ingested into DataHub")
-                log.warning(f"  3. Target platforms ({TARGET_PLATFORMS}) match ingested platforms")
-            else:
-                log.info(f"✓ Found {len(platform_schemas)} platform(s): {list(platform_schemas.keys())}")
-                
-                # 2. 각 플랫폼/스키마별 메트릭 수집
-                total_schemas = sum(len(schemas) for schemas in platform_schemas.values())
-                log.info(f"✓ Total schemas to process: {total_schemas}")
-                log.info("")
-                
-                for platform, schemas in platform_schemas.items():
-                    log.info(f"Processing platform: {platform} ({len(schemas)} schemas)")
-                    
-                    for schema_name in schemas:
-                        try:
-                            analyze_schema_metrics(platform, schema_name)
-                        except Exception as e:
-                            log.error(f"✗ Failed to analyze {platform}/{schema_name}: {e}", exc_info=True)
-                    
-                    log.info(f"✓ Completed platform: {platform}")
-                    log.info("")
-
-            log.info("=" * 60)
-            log.info(f"Scrape cycle completed. Sleeping for {SCRAPE_INTERVAL} seconds...")
-            log.info("=" * 60)
-
+            time.sleep(SCRAPE_INTERVAL)
+            collect_metrics()
+        except KeyboardInterrupt:
+            log.info("\n👋 Shutting down...")
+            break
         except Exception as e:
-            log.error(f"✗ Main loop error: {e}", exc_info=True)
-
-        time.sleep(SCRAPE_INTERVAL)
+            log.error(f"Main loop error: {e}", exc_info=True)
 
 
 # --------------------------------------------------------------
