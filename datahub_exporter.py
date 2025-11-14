@@ -253,9 +253,16 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
               editableProperties { description }
               ownership { 
                 owners { 
-                  owner { 
-                    urn 
-                  } 
+                  owner {
+                    ... on CorpUser {
+                      urn
+                      type
+                    }
+                    ... on CorpGroup {
+                      urn
+                      type
+                    }
+                  }
                 } 
               }
               tags { 
