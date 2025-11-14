@@ -22,7 +22,7 @@ GMS_URL = f"http://{DATAHUB_GMS_HOST}:{DATAHUB_GMS_PORT}"
 SCRAPE_INTERVAL = int(os.getenv('SCRAPE_INTERVAL', '60'))
 
 # 타겟 플랫폼 설정 (환경 변수로 커스터마이징 가능)
-TARGET_PLATFORMS = os.getenv('TARGET_PLATFORMS', 'oracle,postgresql').split(',')
+TARGET_PLATFORMS = os.getenv('TARGET_PLATFORMS', 'oracle,postgres,postgresql').split(',')
 TARGET_PLATFORMS = [p.strip().lower() for p in TARGET_PLATFORMS if p.strip()]
 
 # --------------------------------------------------------------
@@ -51,7 +51,9 @@ schema_tables_without_tag = Gauge('datahub_schema_table_without_tag', 'Tables wi
 def parse_dataset_urn(urn):
     """
     DataHub URN을 파싱하여 platform, dataset_name, env를 추출
-    URN 형식: urn:li:dataset:(urn:li:dataPlatform:oracle,pdsm.tab_anode,PROD)
+    URN 형식 예시:
+      - urn:li:dataset:(urn:li:dataPlatform:oracle,pdsm.tab_anode,PROD)
+      - urn:li:dataset:(urn:li:dataPlatform:postgres,cdc_pdsm.public.cdsm_tb_vm_input_rion,PROD)
     
     반환: (platform, dataset_name, env) 또는 (None, None, None)
     """
@@ -62,16 +64,15 @@ def parse_dataset_urn(urn):
         if "(" not in urn or ")" not in urn:
             return None, None, None
         
-        # "urn:li:dataset:(urn:li:dataPlatform:oracle,pdsm.tab_anode,PROD)" 형식
         inside = urn.split("(")[1].split(")")[0]
         parts = inside.split(",")
         
-        if len(parts) < 3:
+        if len(parts) < 2:
             return None, None, None
         
-        platform_part = parts[0]  # "urn:li:dataPlatform:oracle"
-        dataset_name = parts[1].strip()  # "pdsm.tab_anode" (공백 제거)
-        env = parts[2].strip() if len(parts) > 2 else "PROD"  # "PROD"
+        platform_part = parts[0]
+        dataset_name = parts[1].strip()
+        env = parts[2].strip() if len(parts) > 2 else "PROD"
         
         platform = platform_part.replace("urn:li:dataPlatform:", "").lower()
         
@@ -82,39 +83,66 @@ def parse_dataset_urn(urn):
         return None, None, None
 
 
-def extract_schema_from_dataset_name(dataset_name):
+def extract_schema_from_dataset_name(platform, dataset_name):
     """
     Dataset name에서 schema 추출
-    - Oracle/PostgreSQL: schema.table 또는 database.schema.table
-    - 첫 번째 .로 split하여 schema 추출
+    - Oracle: schema.table (예: pdsm.tab_anode -> pdsm)
+    - PostgreSQL: database.schema.table (예: cdc_pdsm.public.cdsm_tb_vm_input_rion -> public)
     """
     if not dataset_name or "." not in dataset_name:
         return None
     
-    # "pdsm.tab_anode" -> "pdsm"
-    # "database.schema.table" -> "database" (첫 번째 부분)
     parts = dataset_name.split(".")
-    return parts[0] if parts else None
+    
+    # PostgreSQL: database.schema.table (3단계)
+    if platform in ['postgres', 'postgresql'] and len(parts) >= 3:
+        return parts[1]  # schema는 두 번째 부분
+    
+    # Oracle: schema.table (2단계)
+    elif platform == 'oracle' and len(parts) >= 2:
+        return parts[0]  # schema는 첫 번째 부분
+    
+    # 기타: 첫 번째 부분을 schema로 간주
+    return parts[0]
 
 
 def get_all_platforms_and_schemas():
     """
-    DataHub에서 모든 dataset URN을 조회하여 platform과 schema 목록을 추출
+    DataHub에서 search API를 사용하여 모든 dataset URN을 조회하고 platform과 schema 목록을 추출
     반환 형태: {platform: [schema1, schema2, ...], ...}
     """
     log.info("Fetching all platforms and schemas from DataHub...")
 
     query = """
-    query listDatasets {
-      listUrns(input: { type: DATASET, start: 0, count: 10000 })
+    query searchDatasets($input: SearchInput!) {
+      search(input: $input) {
+        start
+        count
+        total
+        searchResults {
+          entity {
+            urn
+            type
+          }
+        }
+      }
     }
     """
 
+    variables = {
+        "input": {
+            "type": "DATASET",
+            "query": "*",
+            "start": 0,
+            "count": 10000
+        }
+    }
+
     try:
-        resp = requests.post(f"{GMS_URL}/api/graphql", json={"query": query}, timeout=30)
+        resp = requests.post(f"{GMS_URL}/api/graphql", json={"query": query, "variables": variables}, timeout=30)
         
         if resp.status_code != 200:
-            log.error(f"Failed to list datasets: {resp.status_code} - {resp.text}")
+            log.error(f"Failed to search datasets: {resp.status_code} - {resp.text}")
             return {}
 
         response_json = resp.json()
@@ -122,28 +150,49 @@ def get_all_platforms_and_schemas():
             log.error("API returned None response")
             return {}
         
+        # 에러 체크
+        if 'errors' in response_json:
+            log.error(f"GraphQL errors: {response_json['errors']}")
+            return {}
+        
         data = response_json.get('data')
         if data is None:
             log.error("API response has no 'data' field")
             log.error(f"Full response: {response_json}")
             return {}
-            
-        urns = data.get('listUrns', [])
-        if urns is None:
-            urns = []
-            
-        log.info(f"Retrieved {len(urns)} dataset URNs")
+        
+        search_result = data.get('search')
+        if search_result is None:
+            log.error("API response has no 'search' field")
+            return {}
+        
+        search_results = search_result.get('searchResults', [])
+        if search_results is None:
+            search_results = []
+        
+        total = search_result.get('total', 0)
+        log.info(f"Retrieved {len(search_results)} dataset URNs (total: {total})")
 
         # 디버깅: 첫 몇 개 URN 출력
-        if urns:
+        if search_results:
             log.info(f"Sample URNs (first 3):")
-            for i, urn in enumerate(urns[:3]):
+            for i, result in enumerate(search_results[:3]):
+                entity = result.get('entity', {})
+                urn = entity.get('urn', '')
                 log.info(f"  {i+1}. {urn}")
 
         # platform별 schema 수집
         platform_schemas = {}
 
-        for urn in urns:
+        for result in search_results:
+            entity = result.get('entity', {})
+            if not entity:
+                continue
+            
+            urn = entity.get('urn', '')
+            if not urn:
+                continue
+            
             platform, dataset_name, env = parse_dataset_urn(urn)
             
             if not platform or not dataset_name:
@@ -154,7 +203,7 @@ def get_all_platforms_and_schemas():
                 continue
             
             # Dataset name에서 schema 추출
-            schema = extract_schema_from_dataset_name(dataset_name)
+            schema = extract_schema_from_dataset_name(platform, dataset_name)
             if not schema:
                 continue
             
@@ -192,32 +241,35 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
     query search($input: SearchInput!) {
       search(input: $input) {
         total
-        entities {
-          urn
-          ... on Dataset {
-            properties { 
-              description
-              name
-            }
-            editableProperties { description }
-            ownership { 
-              owners { 
-                owner { 
-                  urn 
-                } 
-              } 
-            }
-            tags { 
-              tags { 
-                tag { 
-                  urn 
-                } 
-              } 
-            }
-            schemaMetadata {
-              fields {
-                fieldPath
+        searchResults {
+          entity {
+            urn
+            type
+            ... on Dataset {
+              properties { 
                 description
+                name
+              }
+              editableProperties { description }
+              ownership { 
+                owners { 
+                  owner { 
+                    urn 
+                  } 
+                } 
+              }
+              tags { 
+                tags { 
+                  tag { 
+                    urn 
+                  } 
+                } 
+              }
+              schemaMetadata {
+                fields {
+                  fieldPath
+                  description
+                }
               }
             }
           }
@@ -254,6 +306,11 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
             log.error(f"API returned None response for {platform}/{schema_name}")
             return []
         
+        # 에러 체크
+        if 'errors' in response_json:
+            log.error(f"GraphQL errors for {platform}/{schema_name}: {response_json['errors']}")
+            return []
+        
         data = response_json.get("data")
         if data is None:
             log.error(f"API response has no 'data' field for {platform}/{schema_name}")
@@ -264,21 +321,21 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
         if search_result is None:
             log.error(f"API response has no 'search' field for {platform}/{schema_name}")
             return []
-            
+        
+        search_results = search_result.get("searchResults", [])
+        if search_results is None:
+            search_results = []
+        
         total = search_result.get("total", 0)
-        all_entities = search_result.get("entities")
-        
-        if all_entities is None:
-            all_entities = []
-        
-        log.info(f"Platform {platform}: Retrieved {len(all_entities)} datasets (total: {total})")
+        log.info(f"Platform {platform}: Retrieved {len(search_results)} datasets (total: {total})")
 
         # Client-side 필터링: schema로 필터
         filtered = []
-        for entity in all_entities:
-            if entity is None:
+        for result in search_results:
+            entity = result.get('entity', {})
+            if not entity:
                 continue
-                
+            
             urn = entity.get("urn", "")
             if not urn:
                 continue
@@ -289,7 +346,7 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
                 continue
             
             # Dataset name에서 schema 추출
-            dataset_schema = extract_schema_from_dataset_name(dataset_name)
+            dataset_schema = extract_schema_from_dataset_name(platform, dataset_name)
             if not dataset_schema:
                 continue
             
@@ -477,7 +534,6 @@ def main():
                 log.warning(f"  1. DataHub GMS is accessible at {GMS_URL}")
                 log.warning(f"  2. Datasets have been ingested into DataHub")
                 log.warning(f"  3. Target platforms ({TARGET_PLATFORMS}) match ingested platforms")
-                log.warning(f"  4. Dataset URNs follow format: urn:li:dataset:(urn:li:dataPlatform:<platform>,<schema>.<table>,<env>)")
             else:
                 log.info(f"✓ Found {len(platform_schemas)} platform(s): {list(platform_schemas.keys())}")
                 
