@@ -425,14 +425,14 @@ def analyze_schema_metrics(platform, schema_name):
 
             properties = dataset.get('properties')
             if properties and properties.get('description'):
-                desc = properties['description'].strip()
-                if desc:
+                desc = properties.get('description')
+                if desc and isinstance(desc, str) and desc.strip():
                     has_table_desc = True
 
             editable_props = dataset.get('editableProperties')
-            if not has_table_desc and editable_props and editable_props.get('description'):
-                desc = editable_props['description'].strip()
-                if desc:
+            if not has_table_desc and editable_props:
+                desc = editable_props.get('description')
+                if desc and isinstance(desc, str) and desc.strip():
                     has_table_desc = True
 
             if has_table_desc:
@@ -475,9 +475,15 @@ def analyze_schema_metrics(platform, schema_name):
                         if field is None:
                             continue
                         total_columns += 1
-                        field_desc = field.get('description', '').strip()
-                        if field_desc:
-                            columns_with_desc += 1
+                        
+                        # None 체크 추가
+                        field_desc = field.get('description')
+                        if field_desc and isinstance(field_desc, str):
+                            field_desc = field_desc.strip()
+                            if field_desc:
+                                columns_with_desc += 1
+                            else:
+                                columns_without_desc += 1
                         else:
                             columns_without_desc += 1
 
