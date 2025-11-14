@@ -48,6 +48,55 @@ schema_tables_without_tag = Gauge('datahub_schema_table_without_tag', 'Tables wi
 # DataHub API
 # --------------------------------------------------------------
 
+def parse_dataset_urn(urn):
+    """
+    DataHub URN을 파싱하여 platform, dataset_name, env를 추출
+    URN 형식: urn:li:dataset:(urn:li:dataPlatform:oracle,pdsm.tab_anode,PROD)
+    
+    반환: (platform, dataset_name, env) 또는 (None, None, None)
+    """
+    try:
+        if not urn or not isinstance(urn, str):
+            return None, None, None
+            
+        if "(" not in urn or ")" not in urn:
+            return None, None, None
+        
+        # "urn:li:dataset:(urn:li:dataPlatform:oracle,pdsm.tab_anode,PROD)" 형식
+        inside = urn.split("(")[1].split(")")[0]
+        parts = inside.split(",")
+        
+        if len(parts) < 3:
+            return None, None, None
+        
+        platform_part = parts[0]  # "urn:li:dataPlatform:oracle"
+        dataset_name = parts[1].strip()  # "pdsm.tab_anode" (공백 제거)
+        env = parts[2].strip() if len(parts) > 2 else "PROD"  # "PROD"
+        
+        platform = platform_part.replace("urn:li:dataPlatform:", "").lower()
+        
+        return platform, dataset_name, env
+        
+    except Exception as e:
+        log.debug(f"Failed to parse URN {urn}: {e}")
+        return None, None, None
+
+
+def extract_schema_from_dataset_name(dataset_name):
+    """
+    Dataset name에서 schema 추출
+    - Oracle/PostgreSQL: schema.table 또는 database.schema.table
+    - 첫 번째 .로 split하여 schema 추출
+    """
+    if not dataset_name or "." not in dataset_name:
+        return None
+    
+    # "pdsm.tab_anode" -> "pdsm"
+    # "database.schema.table" -> "database" (첫 번째 부분)
+    parts = dataset_name.split(".")
+    return parts[0] if parts else None
+
+
 def get_all_platforms_and_schemas():
     """
     DataHub에서 모든 dataset URN을 조회하여 platform과 schema 목록을 추출
@@ -85,44 +134,33 @@ def get_all_platforms_and_schemas():
             
         log.info(f"Retrieved {len(urns)} dataset URNs")
 
+        # 디버깅: 첫 몇 개 URN 출력
+        if urns:
+            log.info(f"Sample URNs (first 3):")
+            for i, urn in enumerate(urns[:3]):
+                log.info(f"  {i+1}. {urn}")
+
         # platform별 schema 수집
         platform_schemas = {}
 
         for urn in urns:
-            # 예시: urn:li:dataset:(urn:li:dataPlatform:oracle,HR.EMPLOYEES,PROD)
-            try:
-                if not urn or not isinstance(urn, str):
-                    continue
-                    
-                if "(" not in urn or ")" not in urn:
-                    continue
-                    
-                inside = urn.split("(")[1].split(")")[0]
-                parts = inside.split(",")
-                
-                if len(parts) < 2:
-                    continue
-                    
-                platform_part = parts[0]
-                name_part = parts[1]
-
-                platform = platform_part.replace("urn:li:dataPlatform:", "").lower()
-                
-                # 타겟 플랫폼만 처리
-                if platform not in TARGET_PLATFORMS:
-                    continue
-                
-                # Oracle/Postgres에서는 보통 name_part = "SCHEMA.TABLE"
-                if "." in name_part:
-                    schema = name_part.split(".")[0]
-                    
-                    if platform not in platform_schemas:
-                        platform_schemas[platform] = set()
-                    platform_schemas[platform].add(schema)
-                    
-            except Exception as e:
-                log.debug(f"Failed to parse URN {urn}: {e}")
+            platform, dataset_name, env = parse_dataset_urn(urn)
+            
+            if not platform or not dataset_name:
                 continue
+            
+            # 타겟 플랫폼만 처리
+            if platform not in TARGET_PLATFORMS:
+                continue
+            
+            # Dataset name에서 schema 추출
+            schema = extract_schema_from_dataset_name(dataset_name)
+            if not schema:
+                continue
+            
+            if platform not in platform_schemas:
+                platform_schemas[platform] = set()
+            platform_schemas[platform].add(schema)
 
         # set를 list로 변환하고 정렬
         result = {
@@ -130,7 +168,10 @@ def get_all_platforms_and_schemas():
             for platform, schemas in platform_schemas.items()
         }
 
-        log.info(f"Detected platforms and schemas: {result}")
+        log.info(f"Detected platforms and schemas:")
+        for platform, schemas in result.items():
+            log.info(f"  {platform}: {schemas}")
+        
         return result
         
     except requests.exceptions.RequestException as e:
@@ -242,29 +283,30 @@ def get_datasets_by_platform_and_schema(platform, schema_name):
             if not urn:
                 continue
             
-            try:
-                if "(" not in urn or ")" not in urn:
-                    continue
-                    
-                inside = urn.split("(")[1].split(")")[0]
-                parts = inside.split(",")
-                
-                if len(parts) < 2:
-                    continue
-                    
-                dataset_name = parts[1]  # "SCHEMA.TABLE"
-                
-                # Schema 이름이 일치하는지 확인
-                if "." in dataset_name:
-                    dataset_schema = dataset_name.split(".")[0]
-                    if dataset_schema.upper() == schema_name.upper():
-                        filtered.append(entity)
-                        
-            except (IndexError, AttributeError) as e:
-                log.debug(f"Failed to parse URN {urn}: {e}")
+            # URN 파싱
+            _, dataset_name, _ = parse_dataset_urn(urn)
+            if not dataset_name:
                 continue
+            
+            # Dataset name에서 schema 추출
+            dataset_schema = extract_schema_from_dataset_name(dataset_name)
+            if not dataset_schema:
+                continue
+            
+            # Schema 이름이 일치하는지 확인 (대소문자 무시)
+            if dataset_schema.upper() == schema_name.upper():
+                filtered.append(entity)
 
         log.info(f"Filtered to {len(filtered)} datasets for schema={schema_name}")
+        
+        # 디버깅: 첫 몇 개 dataset 이름 출력
+        if filtered:
+            log.info(f"Sample datasets in {schema_name} (first 3):")
+            for i, entity in enumerate(filtered[:3]):
+                urn = entity.get("urn", "")
+                _, dataset_name, _ = parse_dataset_urn(urn)
+                log.info(f"  {i+1}. {dataset_name}")
+        
         return filtered
         
     except Exception as e:
@@ -295,11 +337,6 @@ def analyze_schema_metrics(platform, schema_name):
             schema_tables_with_tag.labels(schema=schema_name, platform=platform).set(0)
             schema_tables_without_tag.labels(schema=schema_name, platform=platform).set(0)
             return
-
-        # 첫 번째 데이터셋 로깅 (디버깅용)
-        if datasets:
-            first_dataset = datasets[0]
-            log.info(f"Sample dataset URN: {first_dataset.get('urn')}")
 
         table_count = len(datasets)
         table_with_desc = 0
@@ -401,9 +438,9 @@ def analyze_schema_metrics(platform, schema_name):
         schema_tables_with_tag.labels(schema=schema_name, platform=platform).set(tables_with_tag)
         schema_tables_without_tag.labels(schema=schema_name, platform=platform).set(tables_without_tag)
 
-        log.info(f"[{platform}/{schema_name}] Tables: {table_count}, with desc: {table_with_desc} ({table_desc_ratio:.1f}%)")
-        log.info(f"[{platform}/{schema_name}] Columns: {total_columns}, with desc: {columns_with_desc} ({column_desc_ratio:.1f}%)")
-        log.info(f"[{platform}/{schema_name}] Owners: {tables_with_owner}/{table_count}, Tags: {tables_with_tag}/{table_count}")
+        log.info(f"✓ [{platform}/{schema_name}] Tables: {table_count}, with desc: {table_with_desc} ({table_desc_ratio:.1f}%)")
+        log.info(f"✓ [{platform}/{schema_name}] Columns: {total_columns}, with desc: {columns_with_desc} ({column_desc_ratio:.1f}%)")
+        log.info(f"✓ [{platform}/{schema_name}] Owners: {tables_with_owner}/{table_count}, Tags: {tables_with_tag}/{table_count}")
         
     except Exception as e:
         log.error(f"Error analyzing metrics for {platform}/{schema_name}: {e}", exc_info=True)
@@ -413,44 +450,60 @@ def analyze_schema_metrics(platform, schema_name):
 # Main Loop
 # --------------------------------------------------------------
 def main():
-    log.info("Starting DataHub exporter...")
+    log.info("=" * 60)
+    log.info("Starting DataHub Exporter")
+    log.info("=" * 60)
     log.info(f"Target platforms: {TARGET_PLATFORMS}")
     log.info(f"DataHub GMS URL: {GMS_URL}")
+    log.info(f"Scrape interval: {SCRAPE_INTERVAL} seconds")
     
     start_http_server(8000)
     log.info("Prometheus metrics server started on port 8000")
+    log.info("=" * 60)
 
     while True:
         try:
+            log.info("")
             log.info("=" * 60)
             log.info("Starting new scrape cycle...")
+            log.info("=" * 60)
             
             # 1. DataHub에서 모든 플랫폼과 스키마를 한 번에 조회
             platform_schemas = get_all_platforms_and_schemas()
             
             if not platform_schemas:
-                log.warning(f"No platforms or schemas found in DataHub for targets: {TARGET_PLATFORMS}")
+                log.warning("⚠ No platforms or schemas found in DataHub")
                 log.warning("Please check:")
                 log.warning(f"  1. DataHub GMS is accessible at {GMS_URL}")
-                log.warning(f"  2. Datasets have been ingested")
+                log.warning(f"  2. Datasets have been ingested into DataHub")
                 log.warning(f"  3. Target platforms ({TARGET_PLATFORMS}) match ingested platforms")
+                log.warning(f"  4. Dataset URNs follow format: urn:li:dataset:(urn:li:dataPlatform:<platform>,<schema>.<table>,<env>)")
             else:
-                log.info(f"Found platforms: {list(platform_schemas.keys())}")
+                log.info(f"✓ Found {len(platform_schemas)} platform(s): {list(platform_schemas.keys())}")
                 
                 # 2. 각 플랫폼/스키마별 메트릭 수집
+                total_schemas = sum(len(schemas) for schemas in platform_schemas.values())
+                log.info(f"✓ Total schemas to process: {total_schemas}")
+                log.info("")
+                
                 for platform, schemas in platform_schemas.items():
-                    log.info(f"Processing platform: {platform} with {len(schemas)} schemas")
+                    log.info(f"Processing platform: {platform} ({len(schemas)} schemas)")
                     
                     for schema_name in schemas:
                         try:
                             analyze_schema_metrics(platform, schema_name)
                         except Exception as e:
-                            log.error(f"Failed to analyze {platform}/{schema_name}: {e}", exc_info=True)
+                            log.error(f"✗ Failed to analyze {platform}/{schema_name}: {e}", exc_info=True)
+                    
+                    log.info(f"✓ Completed platform: {platform}")
+                    log.info("")
 
+            log.info("=" * 60)
             log.info(f"Scrape cycle completed. Sleeping for {SCRAPE_INTERVAL} seconds...")
+            log.info("=" * 60)
 
         except Exception as e:
-            log.error(f"Main loop error: {e}", exc_info=True)
+            log.error(f"✗ Main loop error: {e}", exc_info=True)
 
         time.sleep(SCRAPE_INTERVAL)
 
