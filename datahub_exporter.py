@@ -1,146 +1,242 @@
 import os
 import time
+import logging
+import base64
 import requests
-from prometheus_client import Gauge, start_http_server
+from prometheus_client import start_http_server, Gauge, Counter
 
-DATAHUB_URL = os.getenv("DATAHUB_URL")
-DATAHUB_TOKEN = os.getenv("DATAHUB_TOKEN")
+# --------------------------------------------------------------
+# logging
+# --------------------------------------------------------------
+log = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
-HEADERS = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {DATAHUB_TOKEN}"
-}
+# --------------------------------------------------------------
+# env
+# --------------------------------------------------------------
+DATAHUB_GMS_HOST = os.getenv('DATAHUB_GMS_HOST', 'datahub-gms')
+DATAHUB_GMS_PORT = os.getenv('DATAHUB_GMS_PORT', '8080')
+GMS_URL = f"http://{DATAHUB_GMS_HOST}:{DATAHUB_GMS_PORT}"
+SCRAPE_INTERVAL = int(os.getenv('SCRAPE_INTERVAL', '60'))
 
-# -----------------------------
-# GraphQL Helper
-# -----------------------------
-def gql(query, variables=None):
-    payload = {"query": query, "variables": variables}
-    res = requests.post(DATAHUB_URL, json=payload, headers=HEADERS)
-    res.raise_for_status()
-    return res.json()["data"]
+# --------------------------------------------------------------
+# Prometheus metrics 정의
+# --------------------------------------------------------------
+schema_table_count = Gauge('datahub_schema_table_count', 'Total tables per schema', ['schema', 'platform'])
+schema_table_with_desc = Gauge('datahub_schema_table_with_desc', 'Tables with description', ['schema', 'platform'])
+schema_table_without_desc = Gauge('datahub_schema_table_without_desc', 'Tables without description', ['schema', 'platform'])
+schema_table_desc_ratio = Gauge('datahub_schema_table_desc_ratio', 'Table description ratio (%)', ['schema', 'platform'])
 
-# -----------------------------
-# Prometheus Metrics
-# -----------------------------
-table_count_metric = Gauge("datahub_schema_table_count", "Table count", ["platform", "schema"])
-col_count_metric = Gauge("datahub_schema_column_count", "Column count", ["platform", "schema"])
-table_desc_metric = Gauge("datahub_schema_table_with_desc", "Tables with description", ["platform", "schema"])
-col_desc_metric = Gauge("datahub_schema_column_with_desc", "Columns with description", ["platform", "schema"])
+schema_column_count = Gauge('datahub_schema_column_count', 'Columns per schema', ['schema', 'platform'])
+schema_column_with_desc = Gauge('datahub_schema_column_with_desc', 'Columns with description', ['schema', 'platform'])
+schema_column_without_desc = Gauge('datahub_schema_column_without_desc', 'Columns without description', ['schema', 'platform'])
+schema_column_desc_ratio = Gauge('datahub_schema_column_desc_ratio', 'Column description ratio (%)', ['schema', 'platform'])
 
-# -----------------------------
-# Browse Query (Schema 탐색)
-# -----------------------------
-LIST_SCHEMAS_QUERY = """
-query listSchemas($path: String!) {
-  browse(path: $path) {
-    groups {
-      name
-      path
+schema_tables_with_owner = Gauge('datahub_schema_table_with_owner', 'Tables with owner', ['schema', 'platform'])
+schema_tables_without_owner = Gauge('datahub_schema_table_without_owner', 'Tables without owner', ['schema', 'platform'])
+
+schema_tables_with_tag = Gauge('datahub_schema_table_with_tag', 'Tables with tags', ['schema', 'platform'])
+schema_tables_without_tag = Gauge('datahub_schema_table_without_tag', 'Tables without tags', ['schema', 'platform'])
+
+scrape_errors = Counter('datahub_scrape_errors_total', 'Total scrape errors')
+
+# --------------------------------------------------------------
+# DataHub API (이미 작성된 함수들이 여기 들어옴)
+# --------------------------------------------------------------
+
+def get_all_schemas():
+    """
+    DataHub에서 ingestion된 모든 dataset의 platform/schema 목록을 자동으로 추출한다.
+    반환 형태: [(platform, schema_name), ...]
+    """
+    log.info("Fetching all schemas from DataHub...")
+
+    query = """
+    query listDatasets {
+      listUrns(input: { type: DATASET, start: 0, count: 99999 })
     }
-  }
-}
-"""
+    """
 
-# -----------------------------
-# Browse Query (Table 탐색)
-# -----------------------------
-LIST_TABLES_QUERY = """
-query listTables($path: String!) {
-  browse(path: $path) {
-    entities {
-      urn
-      name
-    }
-  }
-}
-"""
+    resp = requests.post(f"{GMS_URL}/api/graphql", json={"query": query})
+    
+    if resp.status_code != 200:
+        log.error(f"Failed to list datasets: {resp.text}")
+        scrape_errors.inc()
+        return []
 
-# -----------------------------
-# Dataset 상세 조회
-# -----------------------------
-DATASET_DETAIL_QUERY = """
-query datasetDetails($urn: String!) {
-  dataset(urn: $urn) {
-    properties { description }
-    editableProperties { description }
-    schemaMetadata {
-      fields {
-        fieldPath
-        description
+    urns = resp.json().get('data', {}).get('listUrns', [])
+
+    results = set()
+
+    for urn in urns:
+        # 예시: urn:li:dataset:(urn:li:dataPlatform:oracle,HR.EMPLOYEES,PROD)
+        try:
+            inside = urn.split("(")[1].split(")")[0]
+            platform_part, name_part, _ = inside.split(",")
+
+            platform = platform_part.replace("urn:li:dataPlatform:", "")
+            
+            # Oracle/Postgres에서는 보통 name_part = "SCHEMA.TABLE"
+            if "." in name_part:
+                schema = name_part.split(".")[0]
+                results.add((platform, schema))
+        except Exception:
+            continue
+
+    log.info(f"Detected {len(results)} schemas: {results}")
+    return list(results)
+
+
+# def get_datasets_by_platform_and_schema(platform, schema):
+def get_datasets_by_platform_and_schema(platform, schema_name):
+    """
+    특정 platform/schema의 모든 Dataset metadata 전체 조회
+    """
+    query = """
+    query search($input: SearchInput!) {
+      search(input: $input) {
+        entities {
+          urn
+          ... on Dataset {
+            properties { description }
+            editableProperties { description }
+            ownership { owners { owner { urn } } }
+            tags { tags { tag { urn } } }
+            schemaMetadata {
+              fields {
+                fieldPath
+                description
+              }
+            }
+          }
+        }
       }
     }
-  }
-}
-"""
+    """
 
-# -----------------------------
-# Schema 분석 함수
-# -----------------------------
-def analyze_platform(platform, platform_path):
-    print(f"\n🔍 Processing platform: {platform}")
+    variables = {
+        "input": {
+            "type": "DATASET",
+            "query": f"*",
+            "filters": [
+                {"field": "platform", "value": platform},
+                {"field": "schema", "value": schema_name}
+            ],
+            "start": 0,
+            "count": 5000
+        }
+    }
 
-    # 1) 스키마 자동 조회
-    schemas = gql(LIST_SCHEMAS_QUERY, {"path": platform_path})["browse"]["groups"]
+    url = f"{GMS_URL}/api/graphql"
+    resp = requests.post(url, json={"query": query, "variables": variables})
 
-    for schema in schemas:
-        schema_name = schema["name"]
-        schema_path = schema["path"]
+    if resp.status_code != 200:
+        log.error(f"Failed dataset search: {resp.text}")
+        scrape_errors.inc()
+        return []
 
-        print(f"  - Schema: {schema_name}")
+    return resp.json().get("data", {}).get("search", {}).get("entities", [])
 
-        # 2) 해당 스키마의 테이블 자동 조회
-        tables = gql(LIST_TABLES_QUERY, {"path": schema_path})["browse"]["entities"]
 
-        table_count = len(tables)
-        col_count = 0
-        table_desc_count = 0
-        col_desc_count = 0
+def analyze_schema_metrics(platform, schema_name):
+    """ 특정 스키마의 테이블 및 컬럼 메트릭 분석 """ 
+    log.info(f"Analyzing metrics for platform={platform}, schema={schema_name}...") 
+    datasets = get_datasets_by_platform_and_schema(platform, schema_name) 
+    if not datasets: 
+        log.warning(f"No datasets found for {platform}/{schema_name}") # 메트릭을 0으로 설정 
+        schema_table_count.labels(schema=schema_name, platform=platform).set(0) 
+        schema_table_with_desc.labels(schema=schema_name, platform=platform).set(0) 
+        schema_table_without_desc.labels(schema=schema_name, platform=platform).set(0) 
+        schema_table_desc_ratio.labels(schema=schema_name, platform=platform).set(0) 
+        schema_column_count.labels(schema=schema_name, platform=platform).set(0) 
+        schema_column_with_desc.labels(schema=schema_name, platform=platform).set(0) 
+        schema_column_without_desc.labels(schema=schema_name, platform=platform).set(0) 
+        schema_column_desc_ratio.labels(schema=schema_name, platform=platform).set(0) 
+        return # 첫 번째 데이터셋 로깅 (디버깅용) 
+    
+    if datasets: 
+        log.info(f" Sample dataset name: {datasets[0].get('name')}") 
+        
+    table_count = len(datasets) 
+    table_with_desc = 0 
+    table_without_desc = 0 
+    total_columns = 0 
+    columns_with_desc = 0 
+    columns_without_desc = 0 
+    for dataset in datasets: # 테이블 설명 확인 
+        has_table_desc = False
+        
+        # properties.description 또는 editableProperties.description 확인 
+        if dataset.get('properties') and dataset['properties'].get('description'): 
+            desc = dataset['properties']['description'].strip() 
+            if desc: 
+                has_table_desc = True 
+                
+        if not has_table_desc and dataset.get('editableProperties') and dataset['editableProperties'].get('description'): 
+            desc = dataset['editableProperties']['description'].strip() 
+            if desc: 
+                has_table_desc = True 
+                
+        if has_table_desc: 
+            table_with_desc += 1 
+        else: 
+            table_without_desc += 1 # 컬럼 설명 확인 
+            
+        schema_metadata = dataset.get('schemaMetadata') 
+        if schema_metadata and schema_metadata.get('fields'): 
+            for field in schema_metadata['fields']: 
+                total_columns += 1 
+                field_desc = field.get('description', '').strip() 
+                if field_desc: 
+                    columns_with_desc += 1 
+                else: 
+                    columns_without_desc += 1 # 메트릭 설정 
+    schema_table_count.labels(schema=schema_name, platform=platform).set(table_count) 
+    schema_table_with_desc.labels(schema=schema_name, platform=platform).set(table_with_desc) 
+    schema_table_without_desc.labels(schema=schema_name, platform=platform).set(table_without_desc)
+    
+    table_desc_ratio = (table_with_desc / table_count * 100) if table_count > 0 else 0 
+    schema_table_desc_ratio.labels(schema=schema_name, platform=platform).set(table_desc_ratio) 
+    
+    schema_column_count.labels(schema=schema_name, platform=platform).set(total_columns) 
+    schema_column_with_desc.labels(schema=schema_name, platform=platform).set(columns_with_desc) 
+    schema_column_without_desc.labels(schema=schema_name, platform=platform).set(columns_without_desc) 
+    
+    column_desc_ratio = (columns_with_desc / total_columns * 100) if total_columns > 0 else 0 
+    schema_column_desc_ratio.labels(schema=schema_name, platform=platform).set(column_desc_ratio)
+     
+    log.info(f" [{schema_name}] Tables: {table_count}, with desc: {table_with_desc} ({table_desc_ratio:.1f}%)") 
+    log.info(f" [{schema_name}] Columns: {total_columns}, with desc: {columns_with_desc} ({column_desc_ratio:.1f}%)")   
+    
 
-        # 3) 각 테이블의 메타데이터 조회
-        for t in tables:
-            urn = t["urn"]
-
-            detail = gql(DATASET_DETAIL_QUERY, {"urn": urn})["dataset"]
-            if not detail:
-                continue
-
-            # 테이블 description
-            table_desc = (
-                (detail.get("properties") or {}).get("description")
-                or (detail.get("editableProperties") or {}).get("description")
-            )
-
-            if table_desc:
-                table_desc_count += 1
-
-            # 컬럼 description
-            schema_meta = detail.get("schemaMetadata")
-            if schema_meta and schema_meta.get("fields"):
-                fields = schema_meta["fields"]
-                col_count += len(fields)
-                col_desc_count += sum(1 for f in fields if f.get("description"))
-
-        # Prometheus Metric 업데이트
-        table_count_metric.labels(platform=platform, schema=schema_name).set(table_count)
-        col_count_metric.labels(platform=platform, schema=schema_name).set(col_count)
-        table_desc_metric.labels(platform=platform, schema=schema_name).set(table_desc_count)
-        col_desc_metric.labels(platform=platform, schema=schema_name).set(col_desc_count)
-
-        print(f"    Tables={table_count}, Cols={col_count}, T_desc={table_desc_count}, C_desc={col_desc_count}")
-
-# -----------------------------
+# --------------------------------------------------------------
 # Main Loop
-# -----------------------------
-if __name__ == "__main__":
+# --------------------------------------------------------------
+def main():
+    log.info("Starting DataHub exporter...")
     start_http_server(8000)
-    print("Exporter running at :8000/metrics")
 
     while True:
-        # Oracle
-        analyze_platform("oracle", "/platform/oracle")
+        try:
+            # 1. 사용 가능한 플랫폼/스키마 자동 탐색
+            schemas = get_all_schemas()  # 이 함수는 앞선 코드에서 이미 만들어 둠
 
-        # PostgreSQL
-        analyze_platform("postgres", "/platform/postgres")
+            # 2. 각 플랫폼/스키마별 메트릭 분석 실행
+            for platform, schema_name in schemas:
+                analyze_schema_metrics(platform, schema_name)
 
-        time.sleep(300)
+        except Exception as e:
+            log.exception("Scrape failed")
+            scrape_errors.inc()
+
+        time.sleep(SCRAPE_INTERVAL)
+
+
+# --------------------------------------------------------------
+# Entry Point
+# --------------------------------------------------------------
+if __name__ == "__main__":
+    main()
