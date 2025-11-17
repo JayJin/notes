@@ -153,7 +153,7 @@ services:
       postgres-airflow:
         condition: service_healthy
       airflow-init:
-        condition: completed
+        condition: service_completed_successfully
       datahub-gms:
         condition: service_healthy
     environment:
@@ -184,7 +184,7 @@ services:
       postgres-airflow:
         condition: service_healthy
       airflow-init:
-        condition: completed
+        condition: service_completed_successfully
       datahub-gms:
         condition: service_healthy
     environment:
