@@ -28,7 +28,7 @@ dag = DAG(
 )
 
 def update_dataset_description(urn, description):
-    """GraphQL Variables를 사용하여 URN 이스케이프 처리"""
+    """테이블 설명 업데이트"""
     query = """
     mutation updateDataset($urn: String!, $description: String!) {
       updateDataset(
@@ -72,7 +72,7 @@ def update_dataset_description(urn, description):
         return False
 
 def update_field_description(dataset_urn, field_path, description):
-    """GraphQL Variables를 사용하여 필드 설명 업데이트"""
+    """컬럼 설명 업데이트"""
     query = """
     mutation updateDescription($urn: String!, $subResource: String!, $description: String!) {
       updateDescription(
@@ -124,7 +124,7 @@ def validate_connection():
             return True
     except Exception as e:
         logger.error(f"Failed: {e}")
-        return False
+    return False
 
 def process_csv_file():
     """CSV 파일 처리"""
@@ -133,7 +133,8 @@ def process_csv_file():
         return
     
     logger.info(f"Reading: {CSV_FILE_PATH}")
-    success = fail = 0
+    success = 0
+    fail = 0
     
     try:
         with open(CSV_FILE_PATH, 'r', encoding='utf-8') as f:
@@ -145,19 +146,31 @@ def process_csv_file():
                 description = row.get('description', '').strip()
                 
                 if not urn:
+                    logger.warning(f"Row {idx}: Missing URN")
+                    fail += 1
                     continue
                 
                 logger.info(f"Row {idx}: {row_type}")
                 
                 if row_type == 'dataset' and description:
-                    success += 1 if update_dataset_description(urn, description) else 0
-                    fail += 0 if success else 1
+                    if update_dataset_description(urn, description):
+                        success += 1
+                    else:
+                        fail += 1
                 
                 elif row_type == 'column' and field_path and description:
-                    success += 1 if update_field_description(urn, field_path, description) else 0
-                    fail += 0 if success else 1
+                    if update_field_description(urn, field_path, description):
+                        success += 1
+                    else:
+                        fail += 1
+                else:
+                    logger.warning(f"Row {idx}: Insufficient data")
+                    fail += 1
         
+        logger.info("")
+        logger.info("=" * 60)
         logger.info(f"Complete! Success: {success}, Failed: {fail}")
+        logger.info("=" * 60)
     except Exception as e:
         logger.error(f"Error: {e}")
 
