@@ -1,0 +1,221 @@
+version: '3.8'
+
+services:
+  # ==================== DataHub Services ====================
+  
+  mysql:
+    image: mysql:8
+    hostname: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: datahub
+      MYSQL_DATABASE: datahub
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - datahub_network
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+    healthcheck:
+      test: mysqladmin ping -h localhost
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  datahub-gms:
+    image: linkedin/datahub-gms:latest
+    hostname: datahub-gms
+    ports:
+      - "8080:8080"
+    environment:
+      DATAHUB_SERVER_PORT: '8080'
+      DATAHUB_SERVER_NODE_ID: datahub-gms-1
+      DATAHUB_TELEMETRY_ENABLED: 'false'
+      MYSQL_HOST: mysql
+      MYSQL_PORT: '3306'
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: datahub
+      MYSQL_DATABASE: datahub
+      # 인증 설정 (필요시 활성화)
+      # METADATA_SERVICE_AUTH_ENABLED: 'true'
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - datahub-gms-logs:/tmp/datahub/logs
+    networks:
+      - datahub_network
+    healthcheck:
+      test: curl -f http://localhost:8080/health || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  datahub-frontend:
+    image: linkedin/datahub-frontend-react:latest
+    hostname: datahub-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: '8080'
+      DATAHUB_TELEMETRY_ENABLED: 'false'
+    depends_on:
+      datahub-gms:
+        condition: service_healthy
+    networks:
+      - datahub_network
+
+  datahub-exporter:
+    image: python:3.10-slim
+    hostname: datahub-exporter
+    ports:
+      - "9105:9105"
+    environment:
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: '8080'
+      TARGET_PLATFORMS: 'oracle,postgres'
+      SCRAPE_INTERVAL: '60'
+      METRICS_PORT: '9105'
+    volumes:
+      - ./datahub_exporter.py:/app/datahub_exporter.py
+    working_dir: /app
+    command: >
+      bash -c "
+        pip install -q prometheus-client requests &&
+        python datahub_exporter.py
+      "
+    depends_on:
+      datahub-gms:
+        condition: service_healthy
+    networks:
+      - datahub_network
+
+  # ==================== Airflow Services ====================
+  
+  postgres-airflow:
+    image: postgres:13-alpine
+    hostname: postgres-airflow
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-airflow-data:/var/lib/postgresql/data
+    networks:
+      - datahub_network
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'airflow']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-init:
+    image: apache/airflow:2.8.0-python3.10
+    hostname: airflow-init
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      # DataHub 연결 정보
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: '8080'
+      DATAHUB_GMS_URL: http://datahub-gms:8080
+      # 선택: DataHub 인증 토큰 (필요시)
+      # DATAHUB_AUTH_TOKEN: ''  # PAT 토큰 입력
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        echo "Initializing Airflow database..."
+        airflow db init
+        echo "Creating admin user..."
+        airflow users create \
+          --role Admin \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --email [email protected] || echo "Admin user already exists"
+        echo "Airflow initialization complete"
+    networks:
+      - datahub_network
+
+  airflow-scheduler:
+    image: apache/airflow:2.8.0-python3.10
+    hostname: airflow-scheduler
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      airflow-init:
+        condition: completed
+      datahub-gms:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      # DataHub 연결 정보
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: '8080'
+      DATAHUB_GMS_URL: http://datahub-gms:8080
+      # 선택: DataHub 인증 토큰
+      # DATAHUB_AUTH_TOKEN: ''
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    networks:
+      - datahub_network
+    command: scheduler
+    restart: always
+
+  airflow-webserver:
+    image: apache/airflow:2.8.0-python3.10
+    hostname: airflow-webserver
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      airflow-init:
+        condition: completed
+      datahub-gms:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+      # DataHub 연결 정보
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: '8080'
+      DATAHUB_GMS_URL: http://datahub-gms:8080
+      # 선택: DataHub 인증 토큰
+      # DATAHUB_AUTH_TOKEN: ''
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    ports:
+      - "8888:8080"
+    networks:
+      - datahub_network
+    command: webserver
+    restart: always
+
+networks:
+  datahub_network:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  datahub-gms-logs:
+  postgres-airflow-data:
